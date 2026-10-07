@@ -197,3 +197,22 @@ fn round_outer_edge_after_drilling() {
         0.003,
     );
 }
+
+fn back_and_right(a: Point3, b: Point3) -> bool {
+    on_top(3.0)(a, b) && ((a.y > 14.9 && b.y > 14.9) || (a.x > 19.9 && b.x > 19.9))
+}
+
+#[test]
+fn round_open_top_chain() {
+    let (solid, count) = blend(&plate(), back_and_right, round(1.0));
+    assert_eq!(count, 2);
+    let expected = 3600.0 - 70.0 * SPANDREL + ROUND_CORNER_OVERLAP;
+    assert_volume("round open top chain", &solid, expected, 0.0005);
+}
+
+#[test]
+fn chamfer_open_top_chain() {
+    let (solid, count) = blend(&plate(), back_and_right, chamfer(1.0));
+    assert_eq!(count, 2);
+    assert_volume("chamfer open top chain", &solid, 3600.0 - 35.0 + 1.0 / 3.0, 0.0005);
+}
