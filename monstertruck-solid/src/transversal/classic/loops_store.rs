@@ -448,6 +448,7 @@ pub(super) fn create_loops_stores<C, S>(
     poly_shell0: &Shell<Point3, PolylineCurve, Option<PolygonMesh>>,
     geom_shell1: &Shell<Point3, C, S>,
     poly_shell1: &Shell<Point3, PolylineCurve, Option<PolygonMesh>>,
+    flat: Option<f64>,
 ) -> Option<LoopsStoreQuadruple<C>>
 where
     C: SearchNearestParameter<CurveParameter, Point = Point3>
@@ -460,6 +461,7 @@ where
         + Send
         + Sync
         + Clone
+        + TryIntoAnalyticSurfaceKind
         + SearchParameter<SurfaceParameter, Point = Point3>
         + SearchNearestParameter<SurfaceParameter, Point = Point3>,
 {
@@ -481,22 +483,60 @@ where
         let (a0, a1, b0, b1) = (a.min(), a.max(), b.min(), b.max());
         (0..3).all(|k| a0[k] <= b1[k] + margin && b0[k] <= a1[k] + margin)
     };
+    let planes0: Vec<_> = geom_shell0
+        .face_iter()
+        .map(super::coplanar::plane_of)
+        .collect();
+    let planes1: Vec<_> = geom_shell1
+        .face_iter()
+        .map(super::coplanar::plane_of)
+        .collect();
     let pairs: Vec<(usize, usize)> = (0..store0_len)
         .flat_map(|i| (0..store1_len).map(move |j| (i, j)))
         .filter(|&(i, j)| match (&bounds0[i], &bounds1[j]) {
             (Some(a), Some(b)) => touching(a, b),
             _ => true,
         })
+        .filter(|&(i, j)| match (flat, planes0[i], planes1[j]) {
+            (Some(tol), Some(a), Some(b)) => !super::coplanar::coplanar(a, b, tol),
+            _ => true,
+        })
         .collect();
+    let along_boundary =
+        |face: &Face<Point3, PolylineCurve, Option<PolygonMesh>>, p: Point3, tol: f64| {
+            face.edge_iter().any(|edge| {
+                let poly = edge.curve();
+                poly.windows(2).any(|s| {
+                    let ab = s[1] - s[0];
+                    let t = ((p - s[0]).dot(ab) / ab.magnitude2().max(1.0e-300)).clamp(0.0, 1.0);
+                    (s[0] + ab * t).distance(p) < tol
+                })
+            })
+        };
     let curves_of = |&(face_index0, face_index1): &(usize, usize)| {
         let polygon0 = poly_shell0[face_index0].surface()?;
         let polygon1 = poly_shell1[face_index1].surface()?;
-        intersection_curve::intersection_curves(
+        let curves = intersection_curve::intersection_curves(
             geom_shell0[face_index0].surface(),
             &polygon0,
             geom_shell1[face_index1].surface(),
             &polygon1,
-        )
+        )?;
+        Some(match flat {
+            Some(tol) => curves
+                .into_iter()
+                .filter(|(polyline, _)| {
+                    !polyline.windows(2).all(|pair| {
+                        (0..=4).all(|k| {
+                            let p = pair[0] + (pair[1] - pair[0]) * (k as f64 / 4.0);
+                            along_boundary(&poly_shell0[face_index0], p, tol * 10.0)
+                                && along_boundary(&poly_shell1[face_index1], p, tol * 10.0)
+                        })
+                    })
+                })
+                .collect(),
+            None => curves,
+        })
     };
     #[cfg(not(target_arch = "wasm32"))]
     let found: Vec<_> = {
