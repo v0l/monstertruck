@@ -372,3 +372,20 @@ fn ring_crossing_a_face_at_a_mesh_row() {
         0.002,
     );
 }
+
+#[test]
+fn box_across_an_edge_of_a_union() {
+    let base = cuboid(Point3::new(0.0, -10.0, 0.0), Point3::new(40.0, 10.0, 2.0));
+    let wall = cuboid(Point3::new(2.0, -8.0, 1.0), Point3::new(4.0, 8.0, 30.0));
+    let bracket = monstertruck_solid::or_normalized(&base, &wall).expect("bracket");
+    assert_volume("bracket", &bracket, 1600.0 + 928.0 - 32.0, 0.001);
+    let gusset = cuboid(Point3::new(3.0, -1.0, 1.5), Point3::new(8.0, 1.0, 8.0));
+    let solid = monstertruck_solid::or_normalized(&bracket, &gusset)
+        .expect("block across the inside corner");
+    assert_volume(
+        "block across a corner",
+        &solid,
+        2496.0 + 4.0 * 6.0 * 2.0,
+        0.001,
+    );
+}

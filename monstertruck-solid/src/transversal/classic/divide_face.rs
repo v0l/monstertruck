@@ -49,6 +49,16 @@ where
     Some(PolylineCurve(vec))
 }
 
+fn beside(poly: &PolylineCurve<Point2>) -> Point2 {
+    poly.windows(2)
+        .map(|pair| (pair[0], pair[1] - pair[0]))
+        .max_by(|a, b| a.1.magnitude2().total_cmp(&b.1.magnitude2()))
+        .map_or_else(
+            || poly.front(),
+            |(start, along)| start + along * 0.5 + Vector2::new(-along.y, along.x) * 1.0e-3,
+        )
+}
+
 #[derive(Clone, Debug)]
 struct WireChunk<'a, C> {
     poly: PolylineCurve<Point2>,
@@ -80,7 +90,7 @@ where
         Some(())
     })?;
     negative_wires.into_iter().try_for_each(|chunk| {
-        let pt = chunk.poly.front();
+        let pt = beside(&chunk.poly);
         let chunk_area = chunk.poly.area();
         let containing: Vec<usize> = (0..pre_faces.len())
             .filter(|&i| !pre_faces[i].is_empty() && pre_faces[i][0].poly.include(pt))
