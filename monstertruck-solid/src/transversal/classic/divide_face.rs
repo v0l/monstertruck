@@ -155,25 +155,38 @@ pub(super) fn divide_faces<C, S>(
     tol: f64,
 ) -> Option<FacesClassification<Point3, C, S>>
 where
-    C: BoundedCurve<Point = Point3> + ParameterDivision1D<Point = Point3>,
-    S: Clone + SearchParameter<SurfaceParameter, Point = Point3> + ParametricSurface3D,
+    C: BoundedCurve<Point = Point3> + ParameterDivision1D<Point = Point3> + Send + Sync,
+    S: Clone
+        + SearchParameter<SurfaceParameter, Point = Point3>
+        + ParametricSurface3D
+        + Send
+        + Sync,
 {
     let mut res = FacesClassification::<Point3, C, S>::default();
-    shell
-        .iter()
-        .zip(loops_store)
-        .try_for_each(|(face, loops)| {
-            if loops
-                .iter()
-                .all(|wire| wire.status() == ShapesOpStatus::Unknown)
-            {
-                res.push(face.clone(), ShapesOpStatus::Unknown);
-            } else {
-                let vec = divide_one_face(face, loops, tol)?;
-                vec.into_iter()
-                    .for_each(|(face, status)| res.push(face, status));
-            }
-            Some(())
-        })?;
+    let divide = |(face, loops): (&Face<Point3, C, S>, &Loops<Point3, C>)| -> Option<Vec<FaceWithShapesOpStatus<C, S>>> {
+        if loops
+            .iter()
+            .all(|wire| wire.status() == ShapesOpStatus::Unknown)
+        {
+            Some(vec![(face.clone(), ShapesOpStatus::Unknown)])
+        } else {
+            divide_one_face(face, loops, tol)
+        }
+    };
+    let pairs: Vec<_> = shell.iter().zip(loops_store.iter()).collect();
+    #[cfg(not(target_arch = "wasm32"))]
+    let divided: Vec<_> = {
+        use rayon::prelude::*;
+        pairs
+            .into_par_iter()
+            .map(divide)
+            .collect::<Option<Vec<_>>>()?
+    };
+    #[cfg(target_arch = "wasm32")]
+    let divided: Vec<_> = pairs.into_iter().map(divide).collect::<Option<Vec<_>>>()?;
+    divided
+        .into_iter()
+        .flatten()
+        .for_each(|(face, status)| res.push(face, status));
     Some(res)
 }
