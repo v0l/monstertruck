@@ -498,7 +498,50 @@ where
     }
     points[0] = curve.evaluate(params[0]);
     points[last] = curve.evaluate(params[last]);
-    Some((params, points))
+    Some(thin_division((params, points), tol))
+}
+
+/// Drops division points that lie within half of `tol` of the chord between their neighbours.
+pub fn thin_division(
+    (params, points): (Vec<f64>, Vec<Point3>),
+    tol: f64,
+) -> (Vec<f64>, Vec<Point3>) {
+    if points.len() < 3 {
+        return (params, points);
+    }
+    let kept = kept_points(&points, tol / 2.0);
+    (
+        kept.iter().map(|&i| params[i]).collect(),
+        kept.iter().map(|&i| points[i]).collect(),
+    )
+}
+
+fn kept_points(points: &[Point3], tol: f64) -> Vec<usize> {
+    let last = points.len() - 1;
+    let mut keep = vec![false; points.len()];
+    keep[0] = true;
+    keep[last] = true;
+    let mut spans = vec![(0, last)];
+    while let Some((a, b)) = spans.pop() {
+        let (p, q) = (points[a], points[b]);
+        let chord = q - p;
+        let length2 = chord.magnitude2();
+        let off = |r: Point3| match length2 > 0.0 {
+            true => (r - p).cross(chord).magnitude2() / length2,
+            false => (r - p).magnitude2(),
+        };
+        let far = (a + 1..b)
+            .map(|i| (i, off(points[i])))
+            .max_by(|x, y| x.1.total_cmp(&y.1));
+        if let Some((i, d2)) = far
+            && d2 > tol * tol
+        {
+            keep[i] = true;
+            spans.push((a, i));
+            spans.push((i, b));
+        }
+    }
+    (0..points.len()).filter(|&i| keep[i]).collect()
 }
 
 impl<C, S0, S1> Cut for IntersectionCurve<C, S0, S1>
