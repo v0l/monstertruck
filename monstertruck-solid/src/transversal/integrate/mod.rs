@@ -753,10 +753,8 @@ where
     );
     let diameter = bounds.diameter().max(TOLERANCE);
     let raw_measure = measure * diameter / NORMALIZED_DIAMETER;
-    let raw_volumes = (
-        signed_volume(solid0, raw_measure),
-        signed_volume(solid1, raw_measure),
-    );
+    let cube = scale.powi(3);
+    let raw_volumes = (unit_volumes.0 / cube, unit_volumes.1 / cube);
     let attempts: Vec<(bool, f64)> = NORMALIZED_TOLERANCES
         .iter()
         .map(|&tol| (true, tol))
