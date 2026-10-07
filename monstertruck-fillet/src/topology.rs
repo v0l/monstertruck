@@ -301,12 +301,44 @@ pub(super) fn fillet_surfaces_along_wire(
     fillet_division: usize,
     profile: &FilletProfile,
 ) -> Option<Vec<NurbsSurface<Vector4>>> {
-    let (edge_starts, edge_spans) = wire_edge_starts_and_spans(wire)?;
     let front_back_ids = if wire.is_closed() {
         None
     } else {
         Some((wire.front_edge()?.id(), wire.back_edge()?.id()))
     };
+    let extensions: Vec<(bool, bool)> = wire
+        .edge_iter()
+        .map(|edge| {
+            let (first, last) = front_back_ids
+                .map(|(front_id, back_id)| (edge.id() == front_id, edge.id() == back_id))
+                .unwrap_or((false, false));
+            (first && !last, last && !first)
+        })
+        .collect();
+    fillet_surfaces_with_extensions(
+        shell,
+        wire,
+        shared_face_index,
+        adjacent_faces,
+        radius,
+        fillet_division,
+        profile,
+        &extensions,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn fillet_surfaces_with_extensions(
+    shell: &Shell,
+    wire: &Wire,
+    shared_face_index: FaceBoundaryEdgeIndex,
+    adjacent_faces: &[FaceBoundaryEdgeIndex],
+    radius: impl Fn(f64) -> f64,
+    fillet_division: usize,
+    profile: &FilletProfile,
+    extensions: &[(bool, bool)],
+) -> Option<Vec<NurbsSurface<Vector4>>> {
+    let (edge_starts, edge_spans) = wire_edge_starts_and_spans(wire)?;
     let wire_faces_iter = wire.edge_iter().zip(adjacent_faces).enumerate();
     let create_fillet_surface =
         |(edge_index, (edge, face_index)): (usize, (&Edge, &FaceBoundaryEdgeIndex))| {
@@ -319,10 +351,8 @@ pub(super) fn fillet_surfaces_along_wire(
                 let global_t = (start + span * edge_t).clamp(0.0, 1.0);
                 radius(global_t)
             };
-            let (first_wire, last_wire) = front_back_ids
-                .map(|(front_id, back_id)| (edge.id() == front_id, edge.id() == back_id))
-                .unwrap_or((false, false));
-            let extend = first_wire || last_wire;
+            let (extend_start, extend_end) = extensions[edge_index];
+            let extend = extend_start || extend_end;
             let mut rs = relay_spheres(
                 surface0,
                 surface1,
@@ -332,10 +362,10 @@ pub(super) fn fillet_surfaces_along_wire(
                 extend,
                 false,
             )?;
-            if first_wire {
+            if extend && !extend_end {
                 rs.pop();
             }
-            if last_wire {
+            if extend && !extend_start {
                 rs.remove(0);
             }
             let surface = match profile {
@@ -375,6 +405,39 @@ pub(super) fn concat_fillet_surface(
         (knot_vector_u, knot_vector_v),
         control_points,
     )))
+}
+
+#[derive(Default)]
+pub(super) struct EdgeReplacements(std::collections::HashMap<EdgeId, (bool, Edge)>);
+
+impl EdgeReplacements {
+    pub(super) fn insert(&mut self, old: &Edge, new: Edge) {
+        self.0.insert(old.id(), (old.orientation(), new));
+    }
+
+    pub(super) fn apply(&self, face: &Face) -> Face {
+        let boundaries = face
+            .absolute_boundaries()
+            .iter()
+            .map(|boundary| {
+                boundary
+                    .iter()
+                    .map(|edge| match self.0.get(&edge.id()) {
+                        Some((orientation, new)) if edge.orientation() == *orientation => {
+                            new.clone()
+                        }
+                        Some((_, new)) => new.inverse(),
+                        None => edge.clone(),
+                    })
+                    .collect::<Wire>()
+            })
+            .collect();
+        let mut new_face = Face::new_unchecked(boundaries, face.surface());
+        if !face.orientation() {
+            new_face.invert();
+        }
+        new_face
+    }
 }
 
 pub(super) fn create_free_edge(curve: Curve) -> Edge {

@@ -188,28 +188,12 @@ pub fn fillet_along_wire(shell: &mut Shell, wire: &Wire, options: &FilletOptions
     let adjacent_faces = enumerate_adjacent_faces(shell, wire, shared_face_index)
         .ok_or(FilletError::AdjacentFacesNotFound)?;
 
-    let mut fillet_surfaces = match &options.radius {
+    let radius: Box<dyn Fn(f64) -> f64 + '_> = match &options.radius {
         RadiusSpec::Constant(r) => {
             let r = *r;
-            fillet_surfaces_along_wire(
-                shell,
-                wire,
-                shared_face_index,
-                &adjacent_faces,
-                move |_| r,
-                division,
-                &options.profile,
-            )
+            Box::new(move |_| r)
         }
-        RadiusSpec::Variable(f) => fillet_surfaces_along_wire(
-            shell,
-            wire,
-            shared_face_index,
-            &adjacent_faces,
-            f.as_ref(),
-            division,
-            &options.profile,
-        ),
+        RadiusSpec::Variable(f) => Box::new(f.as_ref()),
         RadiusSpec::PerEdge(radii) => {
             if radii.len() != wire.len() {
                 return Err(FilletError::PerEdgeRadiusMismatch {
@@ -224,23 +208,37 @@ pub fn fillet_along_wire(shell: &mut Shell, wire: &Wire, options: &FilletOptions
                 .zip(spans.iter())
                 .map(|(start, span)| start + span)
                 .collect();
-            fillet_surfaces_along_wire(
-                shell,
-                wire,
-                shared_face_index,
-                &adjacent_faces,
-                |t| {
-                    let global_t = t.clamp(0.0, 1.0);
-                    let index = ends
-                        .partition_point(|&end| end < global_t)
-                        .min(radii.len() - 1);
-                    radii[index]
-                },
-                division,
-                &options.profile,
-            )
+            Box::new(move |t: f64| {
+                let global_t = t.clamp(0.0, 1.0);
+                let index = ends
+                    .partition_point(|&end| end < global_t)
+                    .min(radii.len() - 1);
+                radii[index]
+            })
         }
+    };
+
+    if closed {
+        return super::chain::fillet_closed_chain(
+            shell,
+            wire,
+            shared_face_index,
+            &adjacent_faces,
+            radius,
+            division,
+            &options.profile,
+        );
     }
+
+    let mut fillet_surfaces = fillet_surfaces_along_wire(
+        shell,
+        wire,
+        shared_face_index,
+        &adjacent_faces,
+        radius,
+        division,
+        &options.profile,
+    )
     .ok_or(FilletError::FilletSurfaceComputationFailed)?;
 
     // Interior seam averaging.
@@ -256,36 +254,13 @@ pub fn fillet_along_wire(shell: &mut Shell, wire: &Wire, options: &FilletOptions
         });
     });
 
-    // Wrap-around seam averaging for closed wires.
-    if closed {
-        let last = fillet_surfaces.len() - 1;
-        for j in 0..fillet_surfaces[last].control_points().len() {
-            let len = fillet_surfaces[last].control_points()[j].len();
-            let p = *fillet_surfaces[last].control_point(j, len - 1);
-            let q = *fillet_surfaces[0].control_point(j, 0);
-            let c = (p + q) / 2.0;
-            *fillet_surfaces[last].control_point_mut(j, len - 1) = c;
-            *fillet_surfaces[0].control_point_mut(j, 0) = c;
-        }
-    }
-
-    if closed {
-        fillet_along_wire_closed(
-            shell,
-            wire,
-            shared_face_index,
-            &adjacent_faces,
-            &fillet_surfaces,
-        )
-    } else {
-        fillet_along_wire_open(
-            shell,
-            wire,
-            shared_face_index,
-            &adjacent_faces,
-            &fillet_surfaces,
-        )
-    }
+    fillet_along_wire_open(
+        shell,
+        wire,
+        shared_face_index,
+        &adjacent_faces,
+        &fillet_surfaces,
+    )
 }
 
 /// Open-wire fillet face construction (original logic).
@@ -535,105 +510,6 @@ fn fillet_along_wire_open(
         }
         boundaries[shared_face_index.boundary_index] = new_wire;
         *shared_face = Face::new_unchecked(boundaries, shared_face.oriented_surface())
-    }
-
-    shell.extend(fillet_faces);
-
-    Ok(())
-}
-
-/// Closed-wire fillet face construction.
-///
-/// All faces are created uniformly using circular indexing -- no special
-/// "first" or "last" face since the wire wraps around.
-fn fillet_along_wire_closed(
-    shell: &mut Shell,
-    _wire: &Wire,
-    shared_face_index: FaceBoundaryEdgeIndex,
-    adjacent_faces: &[FaceBoundaryEdgeIndex],
-    fillet_surfaces: &[NurbsSurface<Vector4>],
-) -> Result<()> {
-    let n = fillet_surfaces.len();
-
-    // Build fillet faces with circular [prev, curr, next] windowing.
-    let mut fillet_faces = Shell::new();
-    for i in 0..n {
-        let prev = (i + n - 1) % n;
-        let next = (i + 1) % n;
-        let surfaces = [
-            fillet_surfaces[prev].clone(),
-            fillet_surfaces[i].clone(),
-            fillet_surfaces[next].clone(),
-        ];
-        let fillet_surface =
-            concat_fillet_surface(&surfaces).ok_or(FilletError::GeometryFailed {
-                context: "concat closed fillet surface",
-            })?;
-        let edge0 = create_free_edge(surfaces[1].curve_v(0).into());
-
-        let edge1 = cut_face_by_last_bezier(shell, adjacent_faces[i], &fillet_surface).ok_or(
-            FilletError::GeometryFailed {
-                context: "cut face by last bezier for closed fillet",
-            },
-        )?;
-
-        let edge2 = {
-            let (v0, v1) = (edge0.front(), edge1.back());
-            let (u, v) = fillet_surface
-                .search_parameter(v1.point(), (1.0, 1.0), 100)
-                .ok_or(FilletError::GeometryFailed {
-                    context: "search parameter for closed fillet edge2",
-                })?;
-            let param_line = Line((0.0, 1.0).into(), (u, v).into());
-            let pcurve = ParameterCurveLinear::new(param_line, fillet_surface.clone());
-            Edge::new(v0, v1, pcurve.into())
-        };
-
-        let edge3 = {
-            let (v0, v1) = (edge0.back(), edge1.front());
-            let (u, v) = fillet_surface
-                .search_parameter(v1.point(), (1.0, 2.0), 100)
-                .ok_or(FilletError::GeometryFailed {
-                    context: "search parameter for closed fillet edge3",
-                })?;
-            let param_line = Line((0.0, 2.0).into(), (u, v).into());
-            let pcurve = ParameterCurveLinear::new(param_line, fillet_surface.clone());
-            Edge::new(v0, v1, pcurve.into())
-        };
-
-        let boundary = [edge0.inverse(), edge2, edge1.inverse(), edge3.inverse()].into();
-        fillet_faces.push(Face::new_unchecked(vec![boundary], fillet_surface));
-    }
-
-    // Rebuild the shared face boundary: replace the entire boundary with
-    // a closed wire built from the fillet face edges.
-    {
-        let face_edges: Vec<_> = fillet_faces
-            .face_iter()
-            .map(|face| face.boundaries()[0][0].clone())
-            .collect();
-
-        let first_vertex = Vertex::new(face_edges[0].back().point());
-        let mut previous_vertex = first_vertex.clone();
-        let mut wire_edges = Vec::with_capacity(n);
-        for (i, edge) in face_edges.iter().enumerate() {
-            let v1 = previous_vertex.clone();
-            let v0 = if i == n - 1 {
-                first_vertex.clone()
-            } else {
-                Vertex::new(edge.front().point())
-            };
-            let new_edge = Edge::new(&v0, &v1, edge.oriented_curve());
-            wire_edges.push(new_edge.inverse());
-            previous_vertex = v0;
-        }
-
-        let new_wire: Wire = wire_edges.into();
-
-        let shared_face = &mut shell[shared_face_index.face_index];
-        let mut boundaries = shared_face.boundaries();
-        boundaries[shared_face_index.boundary_index] = new_wire;
-        *shared_face = Face::new_unchecked(boundaries, shared_face.oriented_surface());
     }
 
     shell.extend(fillet_faces);

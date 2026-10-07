@@ -54,14 +54,6 @@ fn assert_volume(label: &str, solid: &Solid, expected: f64, relative: f64) {
     );
 }
 
-fn assert_volume_between(label: &str, solid: &Solid, low: f64, high: f64) {
-    let actual = volume(solid);
-    assert!(
-        (low..=high).contains(&actual),
-        "{label}: volume {actual:.4} outside [{low:.4}, {high:.4}]"
-    );
-}
-
 fn round(radius: f64) -> FilletOptions { FilletOptions::constant(radius) }
 
 fn chamfer(distance: f64) -> FilletOptions {
@@ -133,25 +125,21 @@ fn round_four_vertical_edges() {
     assert_volume("round vertical edges", &solid, 3600.0 - 4.0 * 3.0 * SPANDREL, 0.001);
 }
 
-fn top_perimeter_bounds(removed_per_length: f64, corner: f64) -> (f64, f64) {
-    let removed = 140.0 * removed_per_length;
-    (3600.0 - removed, 3600.0 - removed + 4.0 * corner)
-}
+const ROUND_CORNER_OVERLAP: f64 = 0.095_870_338;
 
 #[test]
 fn round_top_perimeter() {
     let (solid, count) = blend(&plate(), on_top(3.0), round(1.0));
     assert_eq!(count, 4);
-    let (low, high) = top_perimeter_bounds(SPANDREL, 1.0);
-    assert_volume_between("round top perimeter", &solid, low, high);
+    let expected = 3600.0 - 140.0 * SPANDREL + 4.0 * ROUND_CORNER_OVERLAP;
+    assert_volume("round top perimeter", &solid, expected, 0.0005);
 }
 
 #[test]
 fn chamfer_top_perimeter() {
     let (solid, count) = blend(&plate(), on_top(3.0), chamfer(1.0));
     assert_eq!(count, 4);
-    let (low, high) = top_perimeter_bounds(0.5, 1.0);
-    assert_volume_between("chamfer top perimeter", &solid, low, high);
+    assert_volume("chamfer top perimeter", &solid, 3600.0 - 70.0 + 4.0 / 3.0, 0.0005);
 }
 
 #[test]
