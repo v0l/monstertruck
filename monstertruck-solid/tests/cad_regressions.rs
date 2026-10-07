@@ -287,3 +287,45 @@ fn chamfer_open_top_chain() {
         0.0005,
     );
 }
+
+fn interior_multiplicity_within_degree(knots: &KnotVector, degree: usize) -> bool {
+    let (_, multiplicities) = knots.to_single_multi();
+    multiplicities.len() < 3
+        || multiplicities[1..multiplicities.len() - 1]
+            .iter()
+            .all(|&m| m <= degree)
+}
+
+#[test]
+fn filleted_geometry_is_exportable() {
+    let (solid, _) = blend(&plate(), on_top(3.0), round(1.0));
+    let shell = &solid.boundaries()[0];
+    let planes = shell
+        .face_iter()
+        .filter(|face| matches!(face.surface(), Surface::Plane(_)))
+        .count();
+    assert_eq!(
+        planes, 6,
+        "planar faces should stay planes through a fillet"
+    );
+    shell.face_iter().for_each(|face| {
+        if let Surface::NurbsSurface(surface) = face.surface() {
+            assert!(interior_multiplicity_within_degree(
+                surface.knot_vector_u(),
+                surface.udegree()
+            ));
+            assert!(interior_multiplicity_within_degree(
+                surface.knot_vector_v(),
+                surface.vdegree()
+            ));
+        }
+    });
+    shell.edge_iter().for_each(|edge| {
+        if let Curve::NurbsCurve(curve) = edge.curve() {
+            assert!(interior_multiplicity_within_degree(
+                curve.knot_vector(),
+                curve.degree()
+            ));
+        }
+    });
+}
