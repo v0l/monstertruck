@@ -353,3 +353,22 @@ fn ring_boss_keeps_the_plate_inside_it() {
     let solid = monstertruck_solid::or_normalized(&plate, &ring).expect("union with a ring");
     assert_volume("ring boss", &solid, 3600.0 + (100.0 - 36.0) * 1.0, 1.0e-6);
 }
+
+#[test]
+fn ring_crossing_a_face_at_a_mesh_row() {
+    let block = cuboid(
+        Point3::new(-20.0, -20.0, 0.0),
+        Point3::new(20.0, 20.0, 10.0),
+    );
+    let outer = cylinder(Point3::new(0.0, 0.0, 8.0), 12.0, 4.0);
+    let mut inner = cylinder(Point3::new(0.0, 0.0, 7.0), 8.0, 6.0);
+    inner.not();
+    let ring = monstertruck_solid::and(&outer, &inner, 1.0e-3).expect("ring");
+    let solid = monstertruck_solid::or_normalized(&block, &ring).expect("ring across the top face");
+    assert_volume(
+        "ring across a face",
+        &solid,
+        16000.0 + PI * (144.0 - 64.0) * 2.0,
+        0.002,
+    );
+}
