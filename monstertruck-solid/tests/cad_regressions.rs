@@ -389,3 +389,15 @@ fn box_across_an_edge_of_a_union() {
         0.001,
     );
 }
+
+#[test]
+fn small_hole_survives_a_later_cut() {
+    let plate = cuboid(Point3::new(-40.0, -25.0, 0.0), Point3::new(40.0, 25.0, 2.0));
+    let first = drill(&plate, Point3::new(-20.0, 0.0, -1.0), 0.8, 4.0);
+    let mut tool = cylinder(Point3::new(20.0, 0.0, -1.0), 0.8, 4.0);
+    tool.not();
+    let second = monstertruck_solid::and(&first, &tool, 0.05).expect("second hole");
+    let one = volume(&plate) - volume(&first);
+    let two = volume(&plate) - volume(&second);
+    assert!(two > one * 1.5, "one hole {one}, two holes {two}");
+}

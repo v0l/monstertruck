@@ -73,14 +73,22 @@ fn divide_one_face<C, S>(
 ) -> Option<Vec<FaceWithShapesOpStatus<C, S>>>
 where
     C: BoundedCurve<Point = Point3> + ParameterDivision1D<Point = Point3>,
-    S: Clone + SearchParameter<SurfaceParameter, Point = Point3>,
+    S: Clone + SearchParameter<SurfaceParameter, Point = Point3> + ParametricSurface3D,
 {
     let (mut pre_faces, mut negative_wires) = (Vec::new(), Vec::new());
     let mut map = HashMap::default();
+    let surface = face.surface();
+    let scale = |at: Point2| {
+        surface
+            .uder(at.x, at.y)
+            .cross(surface.vder(at.x, at.y))
+            .magnitude()
+    };
+    let negligible = |area: f64, at: Point2| (area * scale(at)).abs() < tol * tol;
     loops.iter().try_for_each(|wire| {
         let poly = create_parameter_boundary(face, wire, &mut map, tol)?;
         let area = poly.area();
-        if area.abs() < tol {
+        if negligible(area, poly.front()) {
             return Some(());
         }
         match area > 0.0 {
@@ -95,7 +103,7 @@ where
         let containing: Vec<usize> = (0..pre_faces.len())
             .filter(|&i| !pre_faces[i].is_empty() && pre_faces[i][0].poly.include(pt))
             .collect();
-        let is_inverse = |i: usize| (pre_faces[i][0].poly.area() + chunk_area).abs() < tol;
+        let is_inverse = |i: usize| negligible(pre_faces[i][0].poly.area() + chunk_area, pt);
         let parent = containing
             .iter()
             .copied()
@@ -148,7 +156,7 @@ pub(super) fn divide_faces<C, S>(
 ) -> Option<FacesClassification<Point3, C, S>>
 where
     C: BoundedCurve<Point = Point3> + ParameterDivision1D<Point = Point3>,
-    S: Clone + SearchParameter<SurfaceParameter, Point = Point3>,
+    S: Clone + SearchParameter<SurfaceParameter, Point = Point3> + ParametricSurface3D,
 {
     let mut res = FacesClassification::<Point3, C, S>::default();
     shell
