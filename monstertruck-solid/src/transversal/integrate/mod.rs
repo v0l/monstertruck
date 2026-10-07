@@ -682,6 +682,137 @@ where
     }
 }
 
+const NORMALIZED_DIAMETER: f64 = 5.0;
+const NORMALIZED_TOLERANCES: [f64; 5] = [1.0e-4, 2.0e-4, 5.0e-5, 5.0e-4, 2.0e-5];
+const VOLUME_SLACK: f64 = 1.0e-3;
+
+#[derive(Clone, Copy)]
+enum BooleanKind {
+    And,
+    Or,
+    Difference,
+}
+
+fn signed_volume<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
+    solid: &Solid<Point3, C, S>,
+    tol: f64,
+) -> f64 {
+    use monstertruck_meshing::prelude::*;
+    solid
+        .boundaries()
+        .iter()
+        .map(|shell| shell.triangulation(tol).to_polygon().volume())
+        .sum()
+}
+
+fn plausible_volume(kind: BooleanKind, a: f64, b: f64, result: f64) -> bool {
+    let slack = VOLUME_SLACK * a.abs().max(b.abs());
+    let (low, high) = match kind {
+        BooleanKind::And if b < 0.0 => (a + b, a),
+        BooleanKind::And => (0.0, a.min(b)),
+        BooleanKind::Or => (a.max(b), a + b),
+        BooleanKind::Difference => (a - b, a),
+    };
+    result > low - slack && result < high + slack && result > slack
+}
+
+fn boolean_normalized<C, S>(
+    kind: BooleanKind,
+    solid0: &Solid<Point3, C, S>,
+    solid1: &Solid<Point3, C, S>,
+) -> ShapeOpsResult<Solid<Point3, C, S>>
+where
+    C: CuttableTrimAwareShapeOpsCurve<S> + Transformed<Matrix4>,
+    S: ShapeOpsSurface + Transformed<Matrix4>,
+    Plane: IncludeCurve<C> + ToSameGeometry<S>,
+    Line<Point3>: ToSameGeometry<C>,
+    <C as ExactParameterBoundary2D<S>>::BoundaryCurve: BoundedCurve
+        + BoundaryCurveFromSamples<S>
+        + Cut
+        + Clone
+        + Invertible
+        + ExactTrimBoundary2D
+        + Parallelizable,
+{
+    let bounds: BoundingBox<Point3> = solid0
+        .vertex_iter()
+        .chain(solid1.vertex_iter())
+        .map(|vertex| vertex.point())
+        .collect();
+    let scale = NORMALIZED_DIAMETER / bounds.diameter().max(TOLERANCE);
+    let to_unit = Matrix4::from_scale(scale) * Matrix4::from_translation(-bounds.center().to_vec());
+    let from_unit =
+        Matrix4::from_translation(bounds.center().to_vec()) * Matrix4::from_scale(1.0 / scale);
+    let unit0 = transformed_solid(solid0, to_unit);
+    let unit1 = transformed_solid(solid1, to_unit);
+    let measure = NORMALIZED_TOLERANCES[0] * 10.0;
+    let (volume0, volume1) = (
+        signed_volume(&unit0, measure),
+        signed_volume(&unit1, measure),
+    );
+    let mut last_error = ShapeOpsError::EmptyOutputShell {
+        operation: "normalized boolean",
+    };
+    for tol in NORMALIZED_TOLERANCES {
+        let result = match kind {
+            BooleanKind::And => and(&unit0, &unit1, tol),
+            BooleanKind::Or => or(&unit0, &unit1, tol),
+            BooleanKind::Difference => difference(&unit0, &unit1, tol),
+        };
+        match result {
+            Ok(solid)
+                if plausible_volume(kind, volume0, volume1, signed_volume(&solid, measure)) =>
+            {
+                return Ok(transformed_solid(&solid, from_unit));
+            }
+            Ok(_) => {}
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
+}
+
+macro_rules! normalized_boolean {
+    ($(#[$doc:meta])* $name:ident, $kind:expr) => {
+        $(#[$doc])*
+        pub fn $name<C, S>(
+            solid0: &Solid<Point3, C, S>,
+            solid1: &Solid<Point3, C, S>,
+        ) -> ShapeOpsResult<Solid<Point3, C, S>>
+        where
+            C: CuttableTrimAwareShapeOpsCurve<S> + Transformed<Matrix4>,
+            S: ShapeOpsSurface + Transformed<Matrix4>,
+            Plane: IncludeCurve<C> + ToSameGeometry<S>,
+            Line<Point3>: ToSameGeometry<C>,
+            <C as ExactParameterBoundary2D<S>>::BoundaryCurve: BoundedCurve
+                + BoundaryCurveFromSamples<S>
+                + Cut
+                + Clone
+                + Invertible
+                + ExactTrimBoundary2D
+                + Parallelizable,
+        {
+            boolean_normalized($kind, solid0, solid1)
+        }
+    };
+}
+
+normalized_boolean!(
+    /// [`and`] on copies scaled to a fixed size, retried across tolerances until the result volume is consistent with the inputs.
+    and_normalized,
+    BooleanKind::And
+);
+normalized_boolean!(
+    /// [`or`] on copies scaled to a fixed size, retried across tolerances until the result volume is consistent with the inputs.
+    or_normalized,
+    BooleanKind::Or
+);
+normalized_boolean!(
+    /// [`difference`] on copies scaled to a fixed size, retried across tolerances until the result volume is consistent with the inputs.
+    difference_normalized,
+    BooleanKind::Difference
+);
+
 /// Symmetric difference (XOR): the region inside exactly one of the solids.
 pub fn symmetric_difference<C: CuttableTrimAwareShapeOpsCurve<S>, S: ShapeOpsSurface>(
     solid0: &Solid<Point3, C, S>,

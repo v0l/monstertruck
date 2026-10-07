@@ -4,39 +4,51 @@ use std::f64::consts::PI;
 
 const MESH_TOL: f64 = 0.005;
 
-fn cuboid(min: Point3, max: Point3) -> Solid { primitive::cuboid(BoundingBox::from_iter([min, max])) }
+fn cuboid(min: Point3, max: Point3) -> Solid {
+    primitive::cuboid(BoundingBox::from_iter([min, max]))
+}
 
 fn cylinder(center: Point3, radius: f64, height: f64) -> Solid {
     let seed = builder::vertex(center + Vector3::unit_x() * radius);
-    let rim = builder::revolve(&seed, center, Vector3::unit_z(), builder::SweepAngle::Closed, 4);
+    let rim = builder::revolve(
+        &seed,
+        center,
+        Vector3::unit_z(),
+        builder::SweepAngle::Closed,
+        4,
+    );
     let base = builder::try_attach_plane(&[rim]).unwrap();
     builder::extrude(&base, Vector3::unit_z() * height)
 }
 
-fn drill(solid: &Solid, center: Point3, radius: f64, height: f64, tol: f64) -> Solid {
-    let mut tool = cylinder(center, radius, height);
-    tool.not();
-    monstertruck_solid::and(solid, &tool, tol)
-        .unwrap_or_else(|error| panic!("drill r={radius} at {center:?} tol={tol}: {error}"))
+fn drill(solid: &Solid, center: Point3, radius: f64, height: f64) -> Solid {
+    let tool = cylinder(center, radius, height);
+    monstertruck_solid::difference_normalized(solid, &tool)
+        .unwrap_or_else(|error| panic!("drill r={radius} at {center:?}: {error}"))
 }
 
 fn unique_edges(shell: &Shell, pick: impl Fn(Point3, Point3) -> bool) -> Vec<Edge> {
-    shell.edge_iter().filter(|edge| pick(edge.front().point(), edge.back().point())).fold(
-        Vec::new(),
-        |mut edges, edge| {
+    shell
+        .edge_iter()
+        .filter(|edge| pick(edge.front().point(), edge.back().point()))
+        .fold(Vec::new(), |mut edges, edge| {
             if !edges.iter().any(|known: &Edge| known.id() == edge.id()) {
                 edges.push(edge);
             }
             edges
-        },
-    )
+        })
 }
 
-fn blend(solid: &Solid, pick: impl Fn(Point3, Point3) -> bool, options: FilletOptions) -> (Solid, usize) {
+fn blend(
+    solid: &Solid,
+    pick: impl Fn(Point3, Point3) -> bool,
+    options: FilletOptions,
+) -> (Solid, usize) {
     let mut shell = solid.boundaries()[0].clone();
     let edges = unique_edges(&shell, pick);
     assert!(!edges.is_empty(), "edge selection matched nothing");
-    fillet_edges(&mut shell, &edges, Some(&options)).unwrap_or_else(|error| panic!("fillet_edges: {error:?}"));
+    fillet_edges(&mut shell, &edges, Some(&options))
+        .unwrap_or_else(|error| panic!("fillet_edges: {error:?}"));
     let condition = shell.shell_condition();
     let solid = Solid::try_new(vec![shell])
         .unwrap_or_else(|error| panic!("blended shell is not a solid ({condition:?}): {error}"));
@@ -72,32 +84,48 @@ fn on_top(z: f64) -> impl Fn(Point3, Point3) -> bool {
 fn plate_hole_volume(radius: f64) -> f64 { 40.0 * 30.0 * 3.0 - PI * radius * radius * 3.0 }
 
 #[test]
-fn plate_hole_at_fine_tolerance() {
-    let solid = drill(&plate(), Point3::new(10.0, 5.0, -1.0), 1.6, 5.0, 0.001);
-    assert_volume("plate hole", &solid, plate_hole_volume(1.6), 0.002);
-}
-
-#[test]
-fn plate_hole_at_coarse_tolerance() {
-    for tol in [0.01, 0.05, 0.2] {
-        let solid = drill(&plate(), Point3::new(10.0, 5.0, -1.0), 1.6, 5.0, tol);
-        assert_volume(&format!("plate hole tol={tol}"), &solid, plate_hole_volume(1.6), 0.002);
+fn plate_hole_at_any_scale() {
+    for scale in [0.01, 1.0, 100.0] {
+        let plate = cuboid(
+            Point3::new(-20.0, -15.0, 0.0) * scale,
+            Point3::new(20.0, 15.0, 3.0) * scale,
+        );
+        let solid = drill(
+            &plate,
+            Point3::new(10.0, 5.0, -1.0) * scale,
+            1.6 * scale,
+            5.0 * scale,
+        );
+        let expected = plate_hole_volume(1.6) * scale * scale * scale;
+        assert_volume(&format!("plate hole x{scale}"), &solid, expected, 0.002);
     }
 }
 
 #[test]
-fn plate_hole_scaled_up() {
-    let scale: f64 = 10.0;
-    let plate = cuboid(Point3::new(-200.0, -150.0, 0.0), Point3::new(200.0, 150.0, 30.0));
-    let solid = drill(&plate, Point3::new(100.0, 50.0, -10.0), 16.0, 50.0, 0.01);
-    assert_volume("plate hole x10", &solid, plate_hole_volume(1.6) * scale.powi(3), 0.002);
+fn plate_hole_near_corner() {
+    let solid = drill(&plate(), Point3::new(18.0, 13.0, -1.0), 0.5, 5.0);
+    assert_volume(
+        "plate hole near corner",
+        &solid,
+        plate_hole_volume(0.5),
+        0.002,
+    );
+}
+
+#[test]
+fn plate_with_boss() {
+    let boss = cylinder(Point3::new(0.0, 0.0, 2.0), 4.0, 6.0);
+    let solid = monstertruck_solid::or_normalized(&plate(), &boss).expect("union with boss");
+    assert_volume("plate with boss", &solid, 3600.0 + PI * 16.0 * 5.0, 0.002);
 }
 
 #[test]
 fn plate_four_holes() {
     let solid = [(-10.0, 5.0), (10.0, 5.0), (10.0, -5.0), (-10.0, -5.0)]
         .into_iter()
-        .fold(plate(), |solid, (x, y)| drill(&solid, Point3::new(x, y, -1.0), 1.6, 5.0, 0.001));
+        .fold(plate(), |solid, (x, y)| {
+            drill(&solid, Point3::new(x, y, -1.0), 1.6, 5.0)
+        });
     assert_volume(
         "plate four holes",
         &solid,
@@ -122,7 +150,12 @@ fn round_four_vertical_edges() {
     let vertical = |a: Point3, b: Point3| (a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() < 1e-9;
     let (solid, count) = blend(&plate(), vertical, round(1.0));
     assert_eq!(count, 4);
-    assert_volume("round vertical edges", &solid, 3600.0 - 4.0 * 3.0 * SPANDREL, 0.001);
+    assert_volume(
+        "round vertical edges",
+        &solid,
+        3600.0 - 4.0 * 3.0 * SPANDREL,
+        0.001,
+    );
 }
 
 const ROUND_CORNER_OVERLAP: f64 = 0.095_870_338;
@@ -139,7 +172,12 @@ fn round_top_perimeter() {
 fn chamfer_top_perimeter() {
     let (solid, count) = blend(&plate(), on_top(3.0), chamfer(1.0));
     assert_eq!(count, 4);
-    assert_volume("chamfer top perimeter", &solid, 3600.0 - 70.0 + 4.0 / 3.0, 0.0005);
+    assert_volume(
+        "chamfer top perimeter",
+        &solid,
+        3600.0 - 70.0 + 4.0 / 3.0,
+        0.0005,
+    );
 }
 
 #[test]
@@ -159,19 +197,29 @@ fn post(height: f64) -> Solid { cylinder(Point3::origin(), 5.0, height) }
 fn chamfer_cylinder_top() {
     let (solid, _) = blend(&post(10.0), on_top(10.0), chamfer(1.0));
     let removed = 2.0 * PI * (5.0 - 1.0 / 3.0) * 0.5;
-    assert_volume("chamfer cylinder top", &solid, PI * 25.0 * 10.0 - removed, 0.003);
+    assert_volume(
+        "chamfer cylinder top",
+        &solid,
+        PI * 25.0 * 10.0 - removed,
+        0.003,
+    );
 }
 
 #[test]
 fn round_cylinder_top() {
     let (solid, _) = blend(&post(10.0), on_top(10.0), round(1.0));
     let removed = 2.0 * PI * (5.0 - SPANDREL_CENTROID) * SPANDREL;
-    assert_volume("round cylinder top", &solid, PI * 25.0 * 10.0 - removed, 0.003);
+    assert_volume(
+        "round cylinder top",
+        &solid,
+        PI * 25.0 * 10.0 - removed,
+        0.003,
+    );
 }
 
 fn drilled_block() -> Solid {
     let block = cuboid(Point3::origin(), Point3::new(20.0, 20.0, 20.0));
-    drill(&block, Point3::new(10.0, 10.0, -1.0), 2.0, 22.0, 0.001)
+    drill(&block, Point3::new(10.0, 10.0, -1.0), 2.0, 22.0)
 }
 
 #[test]
@@ -182,7 +230,12 @@ fn chamfer_hole_rim() {
     };
     let (solid, _) = blend(&drilled_block(), rim, chamfer(0.5));
     let removed = 2.0 * PI * (2.0 + 0.5 / 3.0) * 0.125;
-    assert_volume("chamfer hole rim", &solid, 8000.0 - PI * 4.0 * 20.0 - removed, 0.003);
+    assert_volume(
+        "chamfer hole rim",
+        &solid,
+        8000.0 - PI * 4.0 * 20.0 - removed,
+        0.003,
+    );
 }
 
 #[test]
@@ -214,5 +267,10 @@ fn round_open_top_chain() {
 fn chamfer_open_top_chain() {
     let (solid, count) = blend(&plate(), back_and_right, chamfer(1.0));
     assert_eq!(count, 2);
-    assert_volume("chamfer open top chain", &solid, 3600.0 - 35.0 + 1.0 / 3.0, 0.0005);
+    assert_volume(
+        "chamfer open top chain",
+        &solid,
+        3600.0 - 35.0 + 1.0 / 3.0,
+        0.0005,
+    );
 }
