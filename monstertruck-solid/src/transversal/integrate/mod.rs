@@ -682,8 +682,8 @@ where
     }
 }
 
-const NORMALIZED_DIAMETER: f64 = 5.0;
-const NORMALIZED_TOLERANCES: [f64; 5] = [1.0e-4, 2.0e-4, 5.0e-5, 5.0e-4, 2.0e-5];
+const NORMALIZED_DIAMETER: f64 = 100.0;
+const NORMALIZED_TOLERANCES: [f64; 5] = [2.0e-3, 4.0e-3, 1.0e-3, 1.0e-2, 4.0e-4];
 const RAW_RELATIVE_TOLERANCES: [f64; 3] = [2.0e-5, 2.0e-6, 1.0e-4];
 const VOLUME_SLACK: f64 = 1.0e-3;
 
