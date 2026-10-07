@@ -81,17 +81,27 @@ where
     })?;
     negative_wires.into_iter().try_for_each(|chunk| {
         let pt = chunk.poly.front();
-        let idx = pre_faces.iter().position(|face| face[0].poly.include(pt));
-        if let Some(i) = idx {
-            let outer_area = pre_faces[i][0].poly.area();
-            let chunk_area = chunk.poly.area();
+        let chunk_area = chunk.poly.area();
+        let containing: Vec<usize> = (0..pre_faces.len())
+            .filter(|&i| !pre_faces[i].is_empty() && pre_faces[i][0].poly.include(pt))
+            .collect();
+        let is_inverse = |i: usize| (pre_faces[i][0].poly.area() + chunk_area).abs() < tol;
+        let parent = containing
+            .iter()
+            .copied()
+            .filter(|&i| !is_inverse(i))
+            .min_by(|&a, &b| {
+                pre_faces[a][0]
+                    .poly
+                    .area()
+                    .total_cmp(&pre_faces[b][0].poly.area())
+            });
+        match (parent, containing.first()) {
+            (Some(i), _) => pre_faces[i].push(chunk),
             // If the sum of areas is zero, the face is canceled.
             // This happens when an intersection loop exactly matches the face boundary.
-            if (outer_area + chunk_area).abs() < tol {
-                pre_faces[i].clear();
-            } else {
-                pre_faces[i].push(chunk);
-            }
+            (None, Some(&i)) => pre_faces[i].clear(),
+            (None, None) => {}
         }
         Some(())
     })?;

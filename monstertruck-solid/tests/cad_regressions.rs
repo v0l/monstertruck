@@ -329,3 +329,27 @@ fn filleted_geometry_is_exportable() {
         }
     });
 }
+
+fn square_wire(half: f64, z: f64) -> Wire {
+    let v = builder::vertices([
+        Point3::new(-half, -half, z),
+        Point3::new(half, -half, z),
+        Point3::new(half, half, z),
+        Point3::new(-half, half, z),
+    ]);
+    (0..4)
+        .map(|i| builder::line(&v[i], &v[(i + 1) % 4]))
+        .collect()
+}
+
+#[test]
+fn ring_boss_keeps_the_plate_inside_it() {
+    let plate = cuboid(Point3::new(-30.0, -15.0, 0.0), Point3::new(30.0, 15.0, 2.0));
+    let ring: Solid = profile::solid_from_planar_profile(
+        vec![square_wire(5.0, 1.5), square_wire(3.0, 1.5)],
+        Vector3::unit_z() * 1.5,
+    )
+    .unwrap();
+    let solid = monstertruck_solid::or_normalized(&plate, &ring).expect("union with a ring");
+    assert_volume("ring boss", &solid, 3600.0 + (100.0 - 36.0) * 1.0, 1.0e-6);
+}
