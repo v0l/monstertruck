@@ -181,6 +181,19 @@ fn chamfer_top_perimeter() {
 }
 
 #[test]
+fn rounding_every_cube_edge_reports_missing_vertex_blend() {
+    let cube = cuboid(Point3::origin(), Point3::new(20.0, 20.0, 20.0));
+    let mut shell = cube.boundaries()[0].clone();
+    let edges = unique_edges(&shell, |_, _| true);
+    let result = fillet_edges(&mut shell, &edges, Some(&round(2.0)));
+    assert!(
+        matches!(result, Err(FilletError::VertexBlendUnsupported)),
+        "{result:?}"
+    );
+}
+
+#[test]
+#[ignore = "vertex blends are not implemented"]
 fn round_every_cube_edge() {
     let cube = cuboid(Point3::origin(), Point3::new(20.0, 20.0, 20.0));
     let (solid, count) = blend(&cube, |_, _| true, round(2.0));

@@ -426,6 +426,23 @@ pub fn fillet_edges(
         }
     }
 
+    {
+        let selected: HashSet<EdgeId> = edge_ids.iter().copied().collect();
+        let mut visited = HashSet::<EdgeId>::new();
+        let mut selected_per_vertex: HashMap<VertexId, usize> = HashMap::new();
+        shell
+            .edge_iter()
+            .filter(|edge| selected.contains(&edge.id()) && visited.insert(edge.id()))
+            .for_each(|edge| {
+                let (front, back) = edge.ends();
+                *selected_per_vertex.entry(front.id()).or_default() += 1;
+                *selected_per_vertex.entry(back.id()).or_default() += 1;
+            });
+        if selected_per_vertex.values().any(|&count| count >= 3) {
+            return Err(FilletError::VertexBlendUnsupported);
+        }
+    }
+
     // Validate per-edge radius count.
     if let RadiusSpec::PerEdge(ref radii) = options.radius
         && radii.len() != edge_ids.len()
