@@ -465,15 +465,40 @@ where
 
 impl<C, S0, S1> ParameterDivision1D for IntersectionCurve<C, S0, S1>
 where
-    C: ParametricCurve3D + BoundedCurve,
+    C: ParametricCurve3D + BoundedCurve + ParameterDivision1D<Point = Point3>,
     S0: ParametricSurface3D + SearchNearestParameter<SurfaceParameter, Point = Point3>,
     S1: ParametricSurface3D + SearchNearestParameter<SurfaceParameter, Point = Point3>,
 {
     type Point = Point3;
-    #[inline(always)]
     fn parameter_division(&self, range: (f64, f64), tol: f64) -> (Vec<f64>, Vec<Point3>) {
-        algo::curve::parameter_division(self, range, tol)
+        follow_leader(self, &self.leader, range, tol)
+            .unwrap_or_else(|| algo::curve::parameter_division(self, range, tol))
     }
+}
+
+fn follow_leader<C, L>(
+    curve: &C,
+    leader: &L,
+    range: (f64, f64),
+    tol: f64,
+) -> Option<(Vec<f64>, Vec<Point3>)>
+where
+    C: ParametricCurve<Point = Point3>,
+    L: ParameterDivision1D<Point = Point3>,
+{
+    let (params, mut points) = leader.parameter_division(range, tol);
+    let last = points.len().checked_sub(1)?;
+    let inner = last.saturating_sub(1);
+    let on_curve = [1, 1 + inner / 2, inner]
+        .into_iter()
+        .filter(|&i| 0 < i && i < last)
+        .all(|i| curve.evaluate(params[i]).distance2(points[i]) < tol * tol);
+    if !on_curve {
+        return None;
+    }
+    points[0] = curve.evaluate(params[0]);
+    points[last] = curve.evaluate(params[last]);
+    Some((params, points))
 }
 
 impl<C, S0, S1> Cut for IntersectionCurve<C, S0, S1>
@@ -634,16 +659,16 @@ where
 
 impl<C, S0, S1, T0, T1> ParameterDivision1D for SurfaceCurve<C, S0, S1, T0, T1>
 where
-    C: ParametricCurve3D + BoundedCurve,
+    C: ParametricCurve3D + BoundedCurve + ParameterDivision1D<Point = Point3>,
     S0: ParametricSurface3D + SearchNearestParameter<SurfaceParameter, Point = Point3> + Clone,
     S1: ParametricSurface3D + SearchNearestParameter<SurfaceParameter, Point = Point3> + Clone,
     T0: Clone,
     T1: Clone,
 {
     type Point = Point3;
-    #[inline(always)]
     fn parameter_division(&self, range: (f64, f64), tol: f64) -> (Vec<f64>, Vec<Point3>) {
-        algo::curve::parameter_division(self, range, tol)
+        follow_leader(self, &self.leader, range, tol)
+            .unwrap_or_else(|| algo::curve::parameter_division(self, range, tol))
     }
 }
 
