@@ -684,6 +684,7 @@ where
 
 const NORMALIZED_DIAMETER: f64 = 5.0;
 const NORMALIZED_TOLERANCES: [f64; 5] = [1.0e-4, 2.0e-4, 5.0e-5, 5.0e-4, 2.0e-5];
+const RAW_RELATIVE_TOLERANCES: [f64; 3] = [2.0e-5, 2.0e-6, 1.0e-4];
 const VOLUME_SLACK: f64 = 1.0e-3;
 
 #[derive(Clone, Copy)]
@@ -746,24 +747,42 @@ where
     let unit0 = transformed_solid(solid0, to_unit);
     let unit1 = transformed_solid(solid1, to_unit);
     let measure = NORMALIZED_TOLERANCES[0] * 10.0;
-    let (volume0, volume1) = (
+    let unit_volumes = (
         signed_volume(&unit0, measure),
         signed_volume(&unit1, measure),
+    );
+    let diameter = bounds.diameter().max(TOLERANCE);
+    let raw_measure = measure * diameter / NORMALIZED_DIAMETER;
+    let raw_volumes = (
+        signed_volume(solid0, raw_measure),
+        signed_volume(solid1, raw_measure),
+    );
+    let attempts = NORMALIZED_TOLERANCES.iter().map(|&tol| (true, tol)).chain(
+        RAW_RELATIVE_TOLERANCES
+            .iter()
+            .map(|&k| (false, k * diameter)),
     );
     let mut last_error = ShapeOpsError::EmptyOutputShell {
         operation: "normalized boolean",
     };
-    for tol in NORMALIZED_TOLERANCES {
+    for (normalized, tol) in attempts {
+        let (a, b, volumes, measure) = match normalized {
+            true => (&unit0, &unit1, unit_volumes, measure),
+            false => (solid0, solid1, raw_volumes, raw_measure),
+        };
         let result = match kind {
-            BooleanKind::And => and(&unit0, &unit1, tol),
-            BooleanKind::Or => or(&unit0, &unit1, tol),
-            BooleanKind::Difference => difference(&unit0, &unit1, tol),
+            BooleanKind::And => and(a, b, tol),
+            BooleanKind::Or => or(a, b, tol),
+            BooleanKind::Difference => difference(a, b, tol),
         };
         match result {
             Ok(solid)
-                if plausible_volume(kind, volume0, volume1, signed_volume(&solid, measure)) =>
+                if plausible_volume(kind, volumes.0, volumes.1, signed_volume(&solid, measure)) =>
             {
-                return Ok(transformed_solid(&solid, from_unit));
+                return Ok(match normalized {
+                    true => transformed_solid(&solid, from_unit),
+                    false => solid,
+                });
             }
             Ok(_) => {}
             Err(error) => last_error = error,
