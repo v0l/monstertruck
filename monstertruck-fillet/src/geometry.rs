@@ -297,6 +297,29 @@ fn almost_fillet_patch(rs0: RelaySphere, rs1: RelaySphere) -> BsplineSurface<Vec
     BsplineSurface::new(knot_vecs, control_points)
 }
 
+fn merge_segment_joints(surface: BsplineSurface<Vector4>) -> BsplineSurface<Vector4> {
+    let degree = surface.vdegree();
+    let (knot_vector_u, knot_vector_v) = surface.knot_vectors().clone();
+    let mut knots: Vec<f64> = knot_vector_v.iter().copied().collect();
+    let mut rows = surface.control_points().clone();
+    let mut start = degree + 1;
+    while start < knots.len() - degree - 1 {
+        let joint = knots[start];
+        let run = knots[start..].iter().take_while(|&&k| k == joint).count();
+        let coincident = rows.iter().all(|row| row[start - 1].near(&row[start]));
+        if run > degree && coincident {
+            knots.remove(start);
+            rows.iter_mut().for_each(|row| {
+                row.remove(start);
+            });
+            start += run - 1;
+        } else {
+            start += run;
+        }
+    }
+    BsplineSurface::new((knot_vector_u, KnotVector::from(knots)), rows)
+}
+
 pub(super) fn expand_fillet(
     relay_spheres: &[RelaySphere],
     surface0: &NurbsSurface<Vector4>,
@@ -353,7 +376,7 @@ pub(super) fn expand_fillet(
     let knot_vecs = (unit_circle_knot_vec(), knot_vector_v);
     let mut bsp_surface = BsplineSurface::new(knot_vecs, control_points);
     bsp_surface.knot_normalize();
-    NurbsSurface::new(bsp_surface)
+    NurbsSurface::new(merge_segment_joints(bsp_surface))
 }
 
 pub(super) fn expand_chamfer(
@@ -409,7 +432,7 @@ pub(super) fn expand_chamfer(
     let knot_vecs = (KnotVector::bezier_knot(1), knot_vector_v);
     let mut bsp_surface = BsplineSurface::new(knot_vecs, control_points);
     bsp_surface.knot_normalize();
-    NurbsSurface::new(bsp_surface)
+    NurbsSurface::new(merge_segment_joints(bsp_surface))
 }
 
 pub(super) fn expand_ridge(
@@ -476,7 +499,7 @@ pub(super) fn expand_ridge(
     let knot_vecs = (KnotVector::uniform_knot(1, 2), knot_vector_v);
     let mut bsp_surface = BsplineSurface::new(knot_vecs, control_points);
     bsp_surface.knot_normalize();
-    NurbsSurface::new(bsp_surface)
+    NurbsSurface::new(merge_segment_joints(bsp_surface))
 }
 
 pub(super) fn ridge_fillet_surface(
@@ -577,7 +600,7 @@ pub(super) fn expand_custom(
     let knot_vecs = (profile.knot_vector().clone(), knot_vector_v);
     let mut bsp_surface = BsplineSurface::new(knot_vecs, control_points);
     bsp_surface.knot_normalize();
-    NurbsSurface::new(bsp_surface)
+    NurbsSurface::new(merge_segment_joints(bsp_surface))
 }
 
 // One argument past the lint threshold: `radius: impl Fn` resists struct

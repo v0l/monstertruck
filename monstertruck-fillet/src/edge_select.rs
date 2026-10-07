@@ -739,7 +739,7 @@ where
 {
     let default_options = FilletOptions::default();
     let options = params.unwrap_or(&default_options);
-    let (mut internal_shell, internal_edge_ids) = convert_shell_in(shell, edges)?;
+    let (mut internal_shell, internal_edge_ids, originals) = convert_shell_in(shell, edges)?;
     let original_shell = internal_shell.clone();
     fillet_edges(&mut internal_shell, &internal_edge_ids, Some(options))?;
     if internal_shell.shell_condition() != ShellCondition::Closed
@@ -752,6 +752,6 @@ where
         }
         internal_shell = original_shell;
     }
-    *shell = convert_shell_out(&internal_shell)?;
+    *shell = convert_shell_out(&internal_shell, &originals)?;
     Ok(())
 }
