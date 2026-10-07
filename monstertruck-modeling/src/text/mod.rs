@@ -115,7 +115,9 @@ fn transform_point(x: f64, y: f64, scale: f64, y_flip: bool, z: f64) -> Point3 {
 ///
 /// Each segment becomes one [`Edge`]; the wire is closed by snapping the
 /// last endpoint to the first vertex when within `closure_tolerance`.
+#[allow(clippy::too_many_arguments)]
 fn contour_to_wire(
+    offset_x: f64,
     start_x: f64,
     start_y: f64,
     segments: &[Segment],
@@ -130,6 +132,9 @@ fn contour_to_wire(
         ));
     }
 
+    let transform_point = |x: f64, y: f64, scale: f64, y_flip: bool, z: f64| {
+        transform_point(x + offset_x, y, scale, y_flip, z)
+    };
     let first_pt = transform_point(start_x, start_y, scale, y_flip, z);
     let first_vertex = builder::vertex(first_pt);
 
@@ -231,6 +236,7 @@ pub fn glyph_profile(
         .filter(|(sx, sy, segs)| !is_degenerate_contour(*sx, *sy, segs))
         .map(|(sx, sy, segs)| {
             contour_to_wire(
+                0.0,
                 *sx,
                 *sy,
                 segs,
@@ -321,7 +327,8 @@ pub fn text_profile(
             .par_iter()
             .map(|c| {
                 contour_to_wire(
-                    c.start_x + c.offset_x / scale,
+                    c.offset_x / scale,
+                    c.start_x,
                     c.start_y,
                     &c.segments,
                     scale,
@@ -339,7 +346,8 @@ pub fn text_profile(
             .iter()
             .map(|c| {
                 contour_to_wire(
-                    c.start_x + c.offset_x / scale,
+                    c.offset_x / scale,
+                    c.start_x,
                     c.start_y,
                     &c.segments,
                     scale,

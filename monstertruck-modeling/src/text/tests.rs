@@ -33,7 +33,7 @@ fn contour_to_wire_square() {
     c.close();
 
     let (sx, sy, segs) = &c.contours[0];
-    let wire = contour_to_wire(*sx, *sy, segs, 1.0, false, 0.0, 1e-7).unwrap();
+    let wire = contour_to_wire(0.0, *sx, *sy, segs, 1.0, false, 0.0, 1e-7).unwrap();
     assert!(wire.is_closed());
     assert_eq!(wire.len(), 4);
 }
@@ -48,7 +48,7 @@ fn contour_to_wire_with_bezier() {
     c.close();
 
     let (sx, sy, segs) = &c.contours[0];
-    let wire = contour_to_wire(*sx, *sy, segs, 1.0, false, 0.0, 1e-7).unwrap();
+    let wire = contour_to_wire(0.0, *sx, *sy, segs, 1.0, false, 0.0, 1e-7).unwrap();
     assert!(wire.is_closed());
     assert_eq!(wire.len(), 2);
 }
@@ -63,7 +63,7 @@ fn contour_to_wire_cubic() {
     c.close();
 
     let (sx, sy, segs) = &c.contours[0];
-    let wire = contour_to_wire(*sx, *sy, segs, 1.0, false, 0.0, 1e-7).unwrap();
+    let wire = contour_to_wire(0.0, *sx, *sy, segs, 1.0, false, 0.0, 1e-7).unwrap();
     assert!(wire.is_closed());
     assert_eq!(wire.len(), 2);
 }
@@ -105,7 +105,7 @@ fn multiple_contours() {
     let wires: Vec<Wire> = c
         .contours
         .iter()
-        .map(|(sx, sy, segs)| contour_to_wire(*sx, *sy, segs, 0.1, false, 0.0, 1e-7).unwrap())
+        .map(|(sx, sy, segs)| contour_to_wire(0.0, *sx, *sy, segs, 0.1, false, 0.0, 1e-7).unwrap())
         .collect();
 
     assert_eq!(wires.len(), 2);
@@ -120,4 +120,16 @@ fn degenerate_contour_filtered() {
         &[Segment::Line(5.0, 5.0), Segment::Line(5.0, 5.0)]
     ));
     assert!(!is_degenerate_contour(0.0, 0.0, &[Segment::Line(1.0, 0.0)]));
+}
+
+#[test]
+fn later_glyphs_keep_every_point_offset() {
+    let contour = vec![
+        Segment::Line(10.0, 0.0),
+        Segment::Line(10.0, 10.0),
+        Segment::Line(0.0, 10.0),
+    ];
+    let wire = contour_to_wire(100.0, 0.0, 0.0, &contour, 1.0, false, 0.0, 1e-7).unwrap();
+    let xs: Vec<f64> = wire.vertex_iter().map(|v| v.point().x).collect();
+    assert_eq!(xs, vec![100.0, 110.0, 110.0, 100.0]);
 }
