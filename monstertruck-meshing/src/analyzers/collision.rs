@@ -136,12 +136,8 @@ fn colliding_segment_pairs(sort_endpoints: Vec<EndPoint>) -> impl Iterator<Item 
 fn disjoint_bdbs(tri0: [Point3; 3], tri1: [Point3; 3]) -> bool {
     let bdb0: BoundingBox<Point3> = tri0.iter().collect();
     let bdb1: BoundingBox<Point3> = tri1.iter().collect();
-    bdb0.max()[0] < bdb1.min()[0]
-        || bdb1.max()[0] < bdb0.min()[0]
-        || bdb0.max()[1] < bdb1.min()[1]
-        || bdb1.max()[1] < bdb0.min()[1]
-        || bdb0.max()[2] < bdb1.min()[2]
-        || bdb1.max()[2] < bdb0.min()[2]
+    let gap = 1.0e-12 * f64::max(bdb0.diameter(), bdb1.diameter());
+    (0..3).any(|k| bdb0.max()[k] + gap < bdb1.min()[k] || bdb1.max()[k] + gap < bdb0.min()[k])
 }
 
 fn collide_seg_triangle(seg: [Point3; 2], tri: [Point3; 3]) -> Option<Point3> {
