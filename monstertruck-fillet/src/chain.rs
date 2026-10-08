@@ -1,6 +1,6 @@
 use algo::curve::{presearch_closest_point, search_closest_parameter};
 use monstertruck_geometry::prelude::*;
-use std::iter::once;
+use std::iter::{once, repeat_n};
 
 use crate::HashSet;
 
@@ -10,7 +10,7 @@ use super::types::*;
 
 type Result<T> = std::result::Result<T, FilletError>;
 
-const MITER_SPANS: usize = 8;
+const MITER_SPANS: usize = 32;
 const SMOOTH_COSINE: f64 = 0.999_999;
 const MEET_TOLERANCE: f64 = 1.0e-4;
 
@@ -85,17 +85,23 @@ fn meet_along_row(
 fn interpolate(points: Vec<Point3>) -> Option<NurbsCurve<Vector4>> {
     let count = points.len();
     let degree = 3.min(count - 1);
-    let knot_vector = KnotVector::uniform_knot(degree, count - degree);
-    let knots: Vec<f64> = knot_vector.iter().copied().collect();
-    let parameter_points: Vec<(f64, Point3)> = points
-        .into_iter()
-        .enumerate()
-        .map(|(i, point)| {
-            let greville = knots[i + 1..=i + degree].iter().sum::<f64>() / degree as f64;
-            (greville, point)
-        })
+    let lengths: Vec<f64> = points.windows(2).map(|w| w[0].distance(w[1])).collect();
+    let total: f64 = lengths.iter().sum();
+    let parameters: Vec<f64> = once(0.0)
+        .chain(lengths.iter().scan(0.0, |run, length| {
+            *run += length / total;
+            Some(*run)
+        }))
         .collect();
-    BsplineCurve::try_interpolate(knot_vector, parameter_points)
+    let knots: Vec<f64> = repeat_n(0.0, degree + 1)
+        .chain(
+            (1..count - degree)
+                .map(|j| parameters[j..j + degree].iter().sum::<f64>() / degree as f64),
+        )
+        .chain(repeat_n(1.0, degree + 1))
+        .collect();
+    let parameter_points: Vec<(f64, Point3)> = parameters.into_iter().zip(points).collect();
+    BsplineCurve::try_interpolate(KnotVector::from(knots), parameter_points)
         .ok()
         .map(NurbsCurve::from)
 }
