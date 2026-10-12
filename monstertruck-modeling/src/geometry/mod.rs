@@ -14,10 +14,10 @@ use monstertruck_topology::compress::{CompressedTrimmedShell, CompressedTrimmedS
 use monstertruck_topology::trimmed::{TrimmedShell, TrimmedSolid};
 // Only the rayon-parallel (native) `to_trimmed_with_parameter_curves` builds
 // faces directly; the wasm32 arm goes through `to_trimmed_with_face_trims`.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
 use monstertruck_topology::trimmed::TrimmedFace;
 use monstertruck_traits::SnapCurveEndpoints;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
 use serde::{Deserialize, Serialize};

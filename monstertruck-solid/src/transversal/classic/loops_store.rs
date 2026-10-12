@@ -538,7 +538,7 @@ where
             None => curves,
         })
     };
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
     let found: Vec<_> = {
         use rayon::prelude::*;
         pairs
@@ -546,7 +546,7 @@ where
             .map(curves_of)
             .collect::<Option<Vec<_>>>()?
     };
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
     let found: Vec<_> = pairs.iter().map(curves_of).collect::<Option<Vec<_>>>()?;
     pairs
         .into_iter()

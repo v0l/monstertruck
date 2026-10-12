@@ -484,7 +484,7 @@ pub(super) fn by_search_parameter<S: MeshableSurface>(
 }
 
 /// Tessellates faces.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
 pub(super) fn shell_tessellation<'a, C, S>(
     shell: &Shell<Point3, C, S>,
     tolerance: f64,
@@ -622,9 +622,9 @@ where
             curve: PolylineCurve::from_curve(curve, curve.range_tuple(), tolerance),
         }
     };
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
     let edges: Vec<_> = shell.edges.par_iter().map(tessellate_edge).collect();
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
     let edges: Vec<_> = shell.edges.iter().map(tessellate_edge).collect();
     let tessellate_face = |(face_idx, face): (usize, &CompressedFace<S>)| {
         let face_start = Instant::now();
@@ -797,14 +797,14 @@ where
             surface: polygon,
         }
     };
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
     let faces = shell
         .faces
         .par_iter()
         .enumerate()
         .map(tessellate_face)
         .collect();
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
     let faces = shell
         .faces
         .iter()
@@ -910,14 +910,14 @@ where
                 }),
         }
     };
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
     let edges: Vec<_> = shell
         .edges
         .par_iter()
         .enumerate()
         .map(tessellate_edge)
         .collect();
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
     let edges: Vec<_> = shell
         .edges
         .iter()
@@ -1159,14 +1159,14 @@ where
             isoparams,
         )
     };
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
     let face_outputs = shell
         .faces
         .par_iter()
         .enumerate()
         .map(tessellate_face)
         .collect::<Vec<_>>();
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
     let face_outputs = shell
         .faces
         .iter()

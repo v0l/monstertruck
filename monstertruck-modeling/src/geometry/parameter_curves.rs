@@ -371,7 +371,7 @@ pub trait ToTrimmedParameterCurves {
 impl ToTrimmedParameterCurves for Shell {
     type Output = TrimmedShell<Point3, Curve, Surface, ParameterCurve<Curve2D, Box<Surface>>>;
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
     fn to_trimmed_with_parameter_curves(&self, tolerance: f64) -> Self::Output {
         self.iter()
             .cloned()
@@ -395,7 +395,7 @@ impl ToTrimmedParameterCurves for Shell {
             .collect()
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
     fn to_trimmed_with_parameter_curves(&self, tolerance: f64) -> Self::Output {
         self.to_trimmed_with_face_trims(|edge, surface| {
             edge.curve().to_parameter_curve_on(surface, tolerance)
@@ -406,7 +406,7 @@ impl ToTrimmedParameterCurves for Shell {
 impl ToTrimmedParameterCurves for Solid {
     type Output = TrimmedSolid<Point3, Curve, Surface, ParameterCurve<Curve2D, Box<Surface>>>;
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
     fn to_trimmed_with_parameter_curves(&self, tolerance: f64) -> Self::Output {
         TrimmedSolid::new(
             self.boundaries()
@@ -416,7 +416,7 @@ impl ToTrimmedParameterCurves for Solid {
         )
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
     fn to_trimmed_with_parameter_curves(&self, tolerance: f64) -> Self::Output {
         self.to_trimmed_with_face_trims(|edge, surface| {
             edge.curve().to_parameter_curve_on(surface, tolerance)

@@ -1,10 +1,10 @@
 use crate::*;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
 use rayon::prelude::*;
 
 /// Minimum U-row count to enable parallel surface evaluation.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
 const PAR_THRESHOLD: usize = 8;
 
 impl<P> PolylineCurve<P> {
@@ -50,7 +50,7 @@ impl StructuredMesh {
     }
 
     /// Meshes the surface with parallel U-row evaluation on non-WASM.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
     pub fn from_surface_par<S>(
         surface: &S,
         range: ((f64, f64), (f64, f64)),

@@ -320,7 +320,7 @@ pub fn text_profile(
     let z = opts.z;
     let closure_tolerance = opts.closure_tolerance;
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
     {
         use rayon::prelude::*;
         contours
@@ -340,7 +340,7 @@ pub fn text_profile(
             .collect()
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
     {
         contours
             .iter()

@@ -23,6 +23,7 @@ vtk = ["vtkio"]
 default = ["analyzers", "filters", "tessellation"]
 
 [dependencies]
+rayon = { workspace = true }
 # `web_time::Instant` is `std::time::Instant` on native and falls back
 # to `performance.now()` on wasm32-unknown-unknown (where std::time::*
 # panics).
@@ -42,7 +43,6 @@ monstertruck-mesh = { workspace = true }
 monstertruck-topology = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rayon = { workspace = true }
 vtkio = { workspace = true, optional = true }
 
 [dev-dependencies]

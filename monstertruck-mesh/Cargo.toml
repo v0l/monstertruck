@@ -13,6 +13,7 @@ categories = ["graphics"]
 exclude = ["examples/**/*.obj"]
 
 [dependencies]
+rayon = { workspace = true }
 array-macro = { workspace = true }
 bytemuck = { workspace = true }
 itertools = { workspace = true }
@@ -21,9 +22,6 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 monstertruck-core = { workspace = true }
 monstertruck-traits = { workspace = true }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rayon = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

@@ -1,7 +1,7 @@
 use crate::*;
 use monstertruck_topology::{compress::*, *};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
 use rayon::prelude::*;
 
 use spade::{iterators::*, *};
@@ -71,14 +71,14 @@ impl Default for TessellationOptions {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
 mod parallelizable {
     /// Parallelizable by `rayon`.
     pub trait Parallelizable: Send + Sync {}
     impl<T: Send + Sync> Parallelizable for T {}
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
 mod parallelizable {
     /// No parallelization in the case of wasm.
     pub trait Parallelizable {}
@@ -476,9 +476,9 @@ pub fn triangulation_with<C: PolylineableCurve, S: MeshableSurface>(
 ) -> Shell<Point3, PolylineCurve, Option<PolygonMesh>> {
     nonpositive_tolerance!(options.tolerance);
     let sp = triangulation::search_parameter_sp::<S>(options.search_trials);
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
     let res = triangulation::shell_tessellation(shell, options.tolerance, sp, options.primitive);
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
     let res = triangulation::shell_tessellation_single_thread(
         shell,
         options.tolerance,
@@ -495,9 +495,9 @@ pub fn robust_triangulation_with<C: PolylineableCurve, S: RobustMeshableSurface>
 ) -> Shell<Point3, PolylineCurve, Option<PolygonMesh>> {
     nonpositive_tolerance!(options.tolerance);
     let sp = triangulation::search_nearest_parameter_sp::<S>(options.search_trials);
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
     let res = triangulation::shell_tessellation(shell, options.tolerance, sp, options.primitive);
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
     let res = triangulation::shell_tessellation_single_thread(
         shell,
         options.tolerance,
@@ -644,13 +644,13 @@ impl<C: PolylineableCurve, S: RobustMeshableSurface> RobustMeshableShape for She
 impl<C: PolylineableCurve, S: MeshableSurface> MeshableShape for Solid<Point3, C, S> {
     type MeshedShape = Solid<Point3, PolylineCurve, Option<PolygonMesh>>;
     fn triangulation(&self, tolerance: f64) -> Self::MeshedShape {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
         let boundaries = self
             .boundaries()
             .par_iter()
             .map(|shell| shell.triangulation(tolerance))
             .collect::<Vec<_>>();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
         let boundaries = self
             .boundaries()
             .iter()
@@ -663,13 +663,13 @@ impl<C: PolylineableCurve, S: MeshableSurface> MeshableShape for Solid<Point3, C
 impl<C: PolylineableCurve, S: RobustMeshableSurface> RobustMeshableShape for Solid<Point3, C, S> {
     type MeshedShape = Solid<Point3, PolylineCurve, Option<PolygonMesh>>;
     fn robust_triangulation(&self, tolerance: f64) -> Self::MeshedShape {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
         let boundaries = self
             .boundaries()
             .par_iter()
             .map(|shell| shell.robust_triangulation(tolerance))
             .collect::<Vec<_>>();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
         let boundaries = self
             .boundaries()
             .iter()
@@ -752,13 +752,13 @@ impl<C: PolylineableCurve + ParameterBoundary2D<S>, S: MeshableSurface> Meshable
 {
     type MeshedShape = CompressedSolid<Point3, PolylineCurve, Option<PolygonMesh>>;
     fn triangulation(&self, tolerance: f64) -> Self::MeshedShape {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
         let boundaries = self
             .boundaries
             .par_iter()
             .map(|shell| shell.triangulation(tolerance))
             .collect::<Vec<_>>();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
         let boundaries = self
             .boundaries
             .iter()
@@ -777,13 +777,13 @@ impl<C: PolylineableCurve + ParameterBoundary2D<S>, S: RobustMeshableSurface> Ro
 {
     type MeshedShape = CompressedSolid<Point3, PolylineCurve, Option<PolygonMesh>>;
     fn robust_triangulation(&self, tolerance: f64) -> Self::MeshedShape {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
         let boundaries = self
             .boundaries
             .par_iter()
             .map(|shell| shell.robust_triangulation(tolerance))
             .collect::<Vec<_>>();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
         let boundaries = self
             .boundaries
             .iter()
@@ -806,13 +806,13 @@ where
 {
     type MeshedShape = CompressedSolid<Point3, PolylineCurve, Option<PolygonMesh>>;
     fn triangulation(&self, tolerance: f64) -> Self::MeshedShape {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
         let boundaries = self
             .boundaries
             .par_iter()
             .map(|shell| shell.triangulation(tolerance))
             .collect::<Vec<_>>();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
         let boundaries = self
             .boundaries
             .iter()
@@ -835,13 +835,13 @@ where
 {
     type MeshedShape = CompressedSolid<Point3, PolylineCurve, Option<PolygonMesh>>;
     fn robust_triangulation(&self, tolerance: f64) -> Self::MeshedShape {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
         let boundaries = self
             .boundaries
             .par_iter()
             .map(|shell| shell.robust_triangulation(tolerance))
             .collect::<Vec<_>>();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
         let boundaries = self
             .boundaries
             .iter()

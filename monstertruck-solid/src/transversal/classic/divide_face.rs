@@ -174,7 +174,7 @@ where
         }
     };
     let pairs: Vec<_> = shell.iter().zip(loops_store.iter()).collect();
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
     let divided: Vec<_> = {
         use rayon::prelude::*;
         pairs
@@ -182,7 +182,7 @@ where
             .map(divide)
             .collect::<Option<Vec<_>>>()?
     };
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
     let divided: Vec<_> = pairs.into_iter().map(divide).collect::<Option<Vec<_>>>()?;
     divided
         .into_iter()
