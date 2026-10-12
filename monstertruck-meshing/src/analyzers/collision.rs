@@ -5,10 +5,8 @@ use array_macro::array;
 ///
 /// # Details
 ///
-/// The algorithm for mesh extraction is as follows.
-/// All the triangles are projected toward the axis to form intervals.
-/// By looking at the overlap of these intervals, we can narrow down the interfering triangles.
-/// The overlap of the intervals is obtained by sorting the endpoints.
+/// Candidate triangle pairs come from a bounding volume hierarchy over the
+/// triangles of `other`, queried with the bounding box of each triangle of `self`.
 ///
 /// # Remarks
 ///
@@ -35,102 +33,109 @@ impl Collision for PolygonMesh {
     }
 }
 
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum EndPointType {
-    Front,
-    Back,
+struct Node {
+    bounds: BoundingBox<Point3>,
+    start: usize,
+    end: usize,
+    children: Option<(usize, usize)>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
-struct EndPoint {
-    entity: f64,
-    r#type: EndPointType,
-    segnum: usize,
-    index: usize,
+struct Bvh {
+    boxes: Vec<BoundingBox<Point3>>,
+    order: Vec<usize>,
+    nodes: Vec<Node>,
 }
 
-impl EndPoint {
-    #[inline(always)]
-    fn new(entity: f64, r#type: EndPointType, segnum: usize, index: usize) -> EndPoint {
-        EndPoint {
-            entity,
-            r#type,
-            segnum,
-            index,
+const LEAF: usize = 4;
+
+impl Bvh {
+    fn new(tris: &[[Point3; 3]]) -> Bvh {
+        let boxes: Vec<BoundingBox<Point3>> = tris.iter().map(|tri| tri.iter().collect()).collect();
+        let order: Vec<usize> = (0..tris.len()).filter(|&i| !degenerate(tris[i])).collect();
+        let mut bvh = Bvh {
+            boxes,
+            order,
+            nodes: Vec::new(),
+        };
+        if !bvh.order.is_empty() {
+            bvh.split(0, bvh.order.len());
         }
+        bvh
     }
-    #[inline(always)]
-    fn from_seg(seg: (f64, f64), segnum: usize, index: usize) -> Vec<EndPoint> {
-        vec![
-            EndPoint::new(seg.0, EndPointType::Front, segnum, index),
-            EndPoint::new(seg.1, EndPointType::Back, segnum, index),
-        ]
+
+    fn split(&mut self, start: usize, end: usize) -> usize {
+        let bounds: BoundingBox<Point3> = self.order[start..end]
+            .iter()
+            .flat_map(|&i| [self.boxes[i].min(), self.boxes[i].max()])
+            .collect();
+        let index = self.nodes.len();
+        self.nodes.push(Node {
+            bounds,
+            start,
+            end,
+            children: None,
+        });
+        if end - start > LEAF {
+            let size = bounds.max() - bounds.min();
+            let axis = (0..3)
+                .max_by(|&a, &b| size[a].total_cmp(&size[b]))
+                .unwrap_or(0);
+            let boxes = &self.boxes;
+            let centre = |i: &usize| boxes[*i].min()[axis] + boxes[*i].max()[axis];
+            let middle = (end - start) / 2;
+            self.order[start..end]
+                .select_nth_unstable_by(middle, |a, b| centre(a).total_cmp(&centre(b)));
+            let left = self.split(start, start + middle);
+            let right = self.split(start + middle, end);
+            self.nodes[index].children = Some((left, right));
+        }
+        index
     }
-}
 
-fn tri_to_seg(tri: [Point3; 3], unit: Vector3) -> (f64, f64) {
-    let a = tri[0].to_vec().dot(unit);
-    let b = tri[1].to_vec().dot(unit);
-    let c = tri[2].to_vec().dot(unit);
-    (f64::min(f64::min(a, b), c), f64::max(f64::max(a, b), c))
-}
-
-fn sorted_endpoints<I, J>(iter0: I, iter1: J, unit: Vector3) -> Vec<EndPoint>
-where
-    I: IntoIterator<Item = [Point3; 3]>,
-    J: IntoIterator<Item = [Point3; 3]>, {
-    let mut res: Vec<EndPoint> = iter0
-        .into_iter()
-        .enumerate()
-        .filter(|(_, tri)| !(tri[1] - tri[0]).cross(tri[2] - tri[0]).so_small())
-        .flat_map(|(i, tri)| EndPoint::from_seg(tri_to_seg(tri, unit), 0, i))
-        .chain(
-            iter1
-                .into_iter()
-                .enumerate()
-                .filter(|(_, tri)| !(tri[1] - tri[0]).cross(tri[2] - tri[0]).so_small())
-                .flat_map(|(i, tri)| EndPoint::from_seg(tri_to_seg(tri, unit), 1, i)),
-        )
-        .collect();
-    res.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Greater));
-    res
-}
-
-fn colliding_segment_pairs(sort_endpoints: Vec<EndPoint>) -> impl Iterator<Item = (usize, usize)> {
-    let mut current = [Vec::<usize>::new(), Vec::<usize>::new()];
-    sort_endpoints
-        .into_iter()
-        .filter_map(
-            move |EndPoint {
-                      r#type,
-                      segnum,
-                      index,
-                      ..
-                  }| match r#type {
-                EndPointType::Front => {
-                    current[segnum].push(index);
-                    Some(
-                        current[1 - segnum]
-                            .clone()
-                            .into_iter()
-                            .map(move |i| if segnum == 0 { (index, i) } else { (i, index) }),
-                    )
-                }
-                EndPointType::Back => {
-                    // SAFETY: every Back endpoint has a matching Front that pushed this index.
-                    let i = current[segnum]
+    fn overlapping(&self, bounds: &BoundingBox<Point3>, found: &mut Vec<usize>) {
+        found.clear();
+        if self.nodes.is_empty() {
+            return;
+        }
+        let mut stack = vec![0];
+        while let Some(index) = stack.pop() {
+            let node = &self.nodes[index];
+            if apart(&node.bounds, bounds) {
+                continue;
+            }
+            match node.children {
+                Some((left, right)) => stack.extend([left, right]),
+                None => found.extend(
+                    self.order[node.start..node.end]
                         .iter()
-                        .enumerate()
-                        .find(|(_, idx)| **idx == index)
-                        .unwrap()
-                        .0;
-                    current[segnum].swap_remove(i);
-                    None
-                }
-            },
-        )
-        .flatten()
+                        .filter(|&&i| !apart(&self.boxes[i], bounds)),
+                ),
+            }
+        }
+        found.sort_unstable();
+    }
+}
+
+fn apart(a: &BoundingBox<Point3>, b: &BoundingBox<Point3>) -> bool {
+    let gap = 1.0e-9 * f64::max(a.diameter(), b.diameter());
+    (0..3).any(|k| a.max()[k] + gap < b.min()[k] || b.max()[k] + gap < a.min()[k])
+}
+
+fn degenerate(tri: [Point3; 3]) -> bool { (tri[1] - tri[0]).cross(tri[2] - tri[0]).so_small() }
+
+fn candidate_pairs<'a>(
+    tris0: &'a [[Point3; 3]],
+    tris1: &'a [[Point3; 3]],
+) -> impl Iterator<Item = (usize, usize)> + 'a {
+    let bvh = Bvh::new(tris1);
+    let mut found = Vec::new();
+    (0..tris0.len())
+        .filter(move |&i| !degenerate(tris0[i]))
+        .flat_map(move |i| {
+            let bounds: BoundingBox<Point3> = tris0[i].iter().collect();
+            bvh.overlapping(&bounds, &mut found);
+            found.iter().map(move |&j| (i, j)).collect::<Vec<_>>()
+        })
 }
 
 fn disjoint_bdbs(tri0: [Point3; 3], tri1: [Point3; 3]) -> bool {
@@ -242,47 +247,28 @@ fn cross_triangles(tri0: [Point3; 3], tri1: [Point3; 3]) -> Option<(Point3, Poin
     triangles_meet(tri0, tri1, cross_seg_triangle)
 }
 
-fn make_pos_tri(poly: &PolygonMesh, face: [StandardVertex; 3]) -> [Point3; 3] {
-    array![i => poly.positions()[face[i].pos]; 3]
+fn positioned(poly: &PolygonMesh) -> Vec<[Point3; 3]> {
+    poly.faces()
+        .triangle_iter()
+        .map(|face| array![i => poly.positions()[face[i].pos]; 3])
+        .collect()
 }
 
 fn collision(poly0: &PolygonMesh, poly1: &PolygonMesh) -> Vec<(Point3, Point3)> {
-    let unit = match poly0.positions().is_empty() {
-        true => return Vec::new(),
-        false => hash::take_one_unit(poly0.positions()[0]),
-    };
-    let tris0 = poly0.faces().triangle_iter().collect::<Vec<_>>();
-    let tris1 = poly1.faces().triangle_iter().collect::<Vec<_>>();
-    let iter0 = tris0.iter().map(|face| make_pos_tri(poly0, *face));
-    let iter1 = tris1.iter().map(|face| make_pos_tri(poly1, *face));
-    colliding_segment_pairs(sorted_endpoints(iter0, iter1, unit))
-        .filter_map(|(idx0, idx1)| {
-            let tri0 = make_pos_tri(poly0, tris0[idx0]);
-            let tri1 = make_pos_tri(poly1, tris1[idx1]);
-            match disjoint_bdbs(tri0, tri1) {
-                true => None,
-                false => cross_triangles(tri0, tri1),
-            }
+    let (tris0, tris1) = (positioned(poly0), positioned(poly1));
+    candidate_pairs(&tris0, &tris1)
+        .filter_map(|(i, j)| match disjoint_bdbs(tris0[i], tris1[j]) {
+            true => None,
+            false => cross_triangles(tris0[i], tris1[j]),
         })
         .collect()
 }
 
 fn are_colliding(poly0: &PolygonMesh, poly1: &PolygonMesh) -> Option<(Point3, Point3)> {
-    let unit = match poly0.positions().is_empty() {
-        true => return None,
-        false => hash::take_one_unit(poly0.positions()[0]),
-    };
-    let tris0 = poly0.faces().triangle_iter().collect::<Vec<_>>();
-    let tris1 = poly1.faces().triangle_iter().collect::<Vec<_>>();
-    let iter0 = tris0.iter().map(|face| make_pos_tri(poly0, *face));
-    let iter1 = tris1.iter().map(|face| make_pos_tri(poly1, *face));
-    colliding_segment_pairs(sorted_endpoints(iter0, iter1, unit)).find_map(|(idx0, idx1)| {
-        let tri0 = make_pos_tri(poly0, tris0[idx0]);
-        let tri1 = make_pos_tri(poly1, tris1[idx1]);
-        match disjoint_bdbs(tri0, tri1) {
-            true => None,
-            false => collide_triangles(tri0, tri1),
-        }
+    let (tris0, tris1) = (positioned(poly0), positioned(poly1));
+    candidate_pairs(&tris0, &tris1).find_map(|(i, j)| match disjoint_bdbs(tris0[i], tris1[j]) {
+        true => None,
+        false => collide_triangles(tris0[i], tris1[j]),
     })
 }
 

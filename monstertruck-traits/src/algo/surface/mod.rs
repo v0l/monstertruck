@@ -567,6 +567,8 @@ where
     }
 }
 
+const MAX_CELL_ASPECT: f64 = 2.0;
+
 fn sub_parameter_division<S>(
     surface: &S,
     (udiv, vdiv): (&mut Vec<f64>, &mut Vec<f64>),
@@ -646,7 +648,24 @@ fn sub_parameter_division<S>(
             if p0.distance2(pt) > tol * tol {
                 let delu = pt00.midpoint(pt01).distance(p0) + pt10.midpoint(pt11).distance(p0);
                 let delv = pt00.midpoint(pt10).distance(p0) + pt01.midpoint(pt11).distance(p0);
-                if delu > delv * 2.0 {
+                let (um, vm) = ((u[0] + u[1]) / 2.0, (v[0] + v[1]) / 2.0);
+                let bend_u = f64::max(
+                    pt00.midpoint(pt10).distance(surface.evaluate(um, v[0])),
+                    pt01.midpoint(pt11).distance(surface.evaluate(um, v[1])),
+                );
+                let bend_v = f64::max(
+                    pt00.midpoint(pt01).distance(surface.evaluate(u[0], vm)),
+                    pt10.midpoint(pt11).distance(surface.evaluate(u[1], vm)),
+                );
+                let bend = f64::max(bend_u, bend_v);
+                if bend > tol / 4.0 {
+                    if bend_u * 2.0 >= bend || delu > delv * MAX_CELL_ASPECT {
+                        *ub = true;
+                    }
+                    if bend_v * 2.0 >= bend || delv > delu * MAX_CELL_ASPECT {
+                        *vb = true;
+                    }
+                } else if delu > delv * 2.0 {
                     *ub = true;
                 } else if delv > delu * 2.0 {
                     *vb = true;
