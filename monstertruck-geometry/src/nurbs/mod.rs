@@ -37,7 +37,7 @@ pub struct KnotVector(Vec<f64>);
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct BasisWindow {
     start: usize,
-    values: SmallVec<[f64; 32]>,
+    values: SmallVec<[f64; 8]>,
     total_length: usize,
 }
 
@@ -85,7 +85,7 @@ impl BasisWindow {
 
     /// Builds a window from a precomputed `start` and `values` slice.
     #[inline(always)]
-    pub(crate) fn new(start: usize, values: SmallVec<[f64; 32]>, total_length: usize) -> Self {
+    pub(crate) fn new(start: usize, values: SmallVec<[f64; 8]>, total_length: usize) -> Self {
         Self {
             start,
             values,

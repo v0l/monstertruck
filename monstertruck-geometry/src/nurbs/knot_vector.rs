@@ -265,7 +265,7 @@ impl KnotVector {
         let start = idx.saturating_sub(degree);
         // The Cox-de Boor recurrence reads `eval[j]` and `eval[j + 1]`; an
         // extra trailing slot avoids a bounds check on the final iteration.
-        let mut eval: SmallVec<[f64; 32]> = smallvec::smallvec![0.0; degree + 2];
+        let mut eval: SmallVec<[f64; 8]> = smallvec::smallvec![0.0; degree + 2];
         eval[idx - start] = 1.0;
 
         for k in 1..=(degree - der_rank) {
