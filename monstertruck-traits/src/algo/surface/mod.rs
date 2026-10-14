@@ -514,6 +514,7 @@ where
     sub_parameter_division(
         surface,
         (&mut udiv, &mut vdiv),
+        vec![None; 4],
         tol,
         MAX_PARAMETER_DIVISION_RECURSION,
         &mut budget,
@@ -572,6 +573,7 @@ const MAX_CELL_ASPECT: f64 = 2.0;
 fn sub_parameter_division<S>(
     surface: &S,
     (udiv, vdiv): (&mut Vec<f64>, &mut Vec<f64>),
+    mut corners: Vec<Option<S::Point>>,
     tol: f64,
     remaining_trials: usize,
     budget: &mut CellBudget,
@@ -620,10 +622,9 @@ fn sub_parameter_division<S>(
     let mut divide_flag0 = vec![false; udiv.len() - 1];
     let mut divide_flag1 = vec![false; vdiv.len() - 1];
     let columns = vdiv.len();
-    let mut corners: Vec<Option<S::Point>> = vec![None; udiv.len() * columns];
-    let mut corner = |i: usize, j: usize| -> S::Point {
-        *corners[i * columns + j].get_or_insert_with(|| surface.evaluate(udiv[i], vdiv[j]))
-    };
+    let mut centres: Vec<Option<S::Point>> = vec![None; (udiv.len() - 1) * (columns - 1)];
+    let mut across_u: Vec<Option<S::Point>> = vec![None; (udiv.len() - 1) * columns];
+    let mut across_v: Vec<Option<S::Point>> = vec![None; udiv.len() * (columns - 1)];
 
     for (i, (u, ub)) in udiv.windows(2).zip(&mut divide_flag0).enumerate() {
         for (j, (v, vb)) in vdiv.windows(2).zip(&mut divide_flag1).enumerate() {
@@ -631,15 +632,20 @@ fn sub_parameter_division<S>(
                 continue;
             }
             let (u_gen, v_gen) = ((u[0] + u[1]) / 2.0, (v[0] + v[1]) / 2.0);
+            let centre = *centres[i * (columns - 1) + j]
+                .get_or_insert_with(|| surface.evaluate(u_gen, v_gen));
             // Independent hash channels for `p` and `q`: `hash1` twice would
             // return the same value, biasing the in-cell sample along the
             // diagonal `p == q`.
-            let [p_jitter, q_jitter] = HashGen::hash2(surface.evaluate(u_gen, v_gen));
+            let [p_jitter, q_jitter] = HashGen::hash2(centre);
             let p = 0.5 + (0.2 * p_jitter - 0.1);
             let q = 0.5 + (0.2 * q_jitter - 0.1);
             let u0 = u[0] * (1.0 - p) + u[1] * p;
             let v0 = v[0] * (1.0 - q) + v[1] * q;
             let p0 = surface.evaluate(u0, v0);
+            let mut corner = |i: usize, j: usize| -> S::Point {
+                *corners[i * columns + j].get_or_insert_with(|| surface.evaluate(udiv[i], vdiv[j]))
+            };
             let pt00 = corner(i, j);
             let pt01 = corner(i, j + 1);
             let pt10 = corner(i + 1, j);
@@ -654,13 +660,21 @@ fn sub_parameter_division<S>(
                 let delu = pt00.midpoint(pt01).distance(p0) + pt10.midpoint(pt11).distance(p0);
                 let delv = pt00.midpoint(pt10).distance(p0) + pt01.midpoint(pt11).distance(p0);
                 let (um, vm) = ((u[0] + u[1]) / 2.0, (v[0] + v[1]) / 2.0);
+                let mut along_u = |j: usize, v: f64| -> S::Point {
+                    *across_u[i * columns + j].get_or_insert_with(|| surface.evaluate(um, v))
+                };
+                let (mid0, mid1) = (along_u(j, v[0]), along_u(j + 1, v[1]));
                 let bend_u = f64::max(
-                    pt00.midpoint(pt10).distance(surface.evaluate(um, v[0])),
-                    pt01.midpoint(pt11).distance(surface.evaluate(um, v[1])),
+                    pt00.midpoint(pt10).distance(mid0),
+                    pt01.midpoint(pt11).distance(mid1),
                 );
+                let mut along_v = |i: usize, u: f64| -> S::Point {
+                    *across_v[i * (columns - 1) + j].get_or_insert_with(|| surface.evaluate(u, vm))
+                };
+                let (mid0, mid1) = (along_v(i, u[0]), along_v(i + 1, u[1]));
                 let bend_v = f64::max(
-                    pt00.midpoint(pt01).distance(surface.evaluate(u[0], vm)),
-                    pt10.midpoint(pt11).distance(surface.evaluate(u[1], vm)),
+                    pt00.midpoint(pt01).distance(mid0),
+                    pt10.midpoint(pt11).distance(mid1),
                 );
                 let bend = f64::max(bend_u, bend_v);
                 if bend > tol / 4.0 {
@@ -682,26 +696,55 @@ fn sub_parameter_division<S>(
     }
 
     let mut new_udiv = vec![udiv[0]];
-    for (u, ub) in udiv.windows(2).zip(divide_flag0) {
+    let mut rows = vec![Spot::Line(0)];
+    for (i, (u, &ub)) in udiv.windows(2).zip(&divide_flag0).enumerate() {
         if ub {
             new_udiv.push((u[0] + u[1]) / 2.0);
+            rows.push(Spot::Middle(i));
         }
         new_udiv.push(u[1]);
+        rows.push(Spot::Line(i + 1));
     }
 
     let mut new_vdiv = vec![vdiv[0]];
-    for (v, vb) in vdiv.windows(2).zip(divide_flag1) {
+    let mut cols = vec![Spot::Line(0)];
+    for (j, (v, &vb)) in vdiv.windows(2).zip(&divide_flag1).enumerate() {
         if vb {
             new_vdiv.push((v[0] + v[1]) / 2.0);
+            cols.push(Spot::Middle(j));
         }
         new_vdiv.push(v[1]);
+        cols.push(Spot::Line(j + 1));
     }
 
     if udiv.len() != new_udiv.len() || vdiv.len() != new_vdiv.len() {
+        let corners = rows
+            .iter()
+            .flat_map(|&row| cols.iter().map(move |&col| (row, col)))
+            .map(|spot| match spot {
+                (Spot::Line(i), Spot::Line(j)) => corners[i * columns + j],
+                (Spot::Middle(i), Spot::Line(j)) => across_u[i * columns + j],
+                (Spot::Line(i), Spot::Middle(j)) => across_v[i * (columns - 1) + j],
+                (Spot::Middle(i), Spot::Middle(j)) => centres[i * (columns - 1) + j],
+            })
+            .collect();
         *udiv = new_udiv;
         *vdiv = new_vdiv;
-        sub_parameter_division(surface, (udiv, vdiv), tol, remaining_trials - 1, budget);
+        sub_parameter_division(
+            surface,
+            (udiv, vdiv),
+            corners,
+            tol,
+            remaining_trials - 1,
+            budget,
+        );
     }
+}
+
+#[derive(Clone, Copy)]
+enum Spot {
+    Line(usize),
+    Middle(usize),
 }
 
 #[cfg(test)]
