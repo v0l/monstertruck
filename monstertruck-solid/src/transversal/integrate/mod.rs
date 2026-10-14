@@ -747,10 +747,21 @@ where
     let unit0 = transformed_solid(solid0, to_unit);
     let unit1 = transformed_solid(solid1, to_unit);
     let measure = NORMALIZED_TOLERANCES[0] * 10.0;
-    let unit_volumes = (
-        signed_volume(&unit0, measure),
-        signed_volume(&unit1, measure),
+    let run = |a: &Solid<Point3, C, S>, b: &Solid<Point3, C, S>, tol: f64| match kind {
+        BooleanKind::And => and(a, b, tol),
+        BooleanKind::Or => or(a, b, tol),
+        BooleanKind::Difference => difference(a, b, tol),
+    };
+    let (unit_volumes, first) = super::join(
+        || {
+            super::join(
+                || signed_volume(&unit0, measure),
+                || signed_volume(&unit1, measure),
+            )
+        },
+        || run(&unit0, &unit1, NORMALIZED_TOLERANCES[0]),
     );
+    let mut first = Some(first);
     let diameter = bounds.diameter().max(TOLERANCE);
     let raw_measure = measure * diameter / NORMALIZED_DIAMETER;
     let cube = scale.powi(3);
@@ -772,11 +783,7 @@ where
                 true => (&unit0, &unit1, unit_volumes, measure),
                 false => (solid0, solid1, raw_volumes, raw_measure),
             };
-            let solid = match kind {
-                BooleanKind::And => and(a, b, tol),
-                BooleanKind::Or => or(a, b, tol),
-                BooleanKind::Difference => difference(a, b, tol),
-            }?;
+            let solid = first.take().unwrap_or_else(|| run(a, b, tol))?;
             let plausible =
                 plausible_volume(kind, volumes.0, volumes.1, signed_volume(&solid, measure));
             Ok(plausible.then(|| match normalized {

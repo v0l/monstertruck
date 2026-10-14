@@ -94,8 +94,8 @@ fn process_one_pair_of_shells<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
         None => (shell0, shell1),
     };
     let flat = imprinted.is_some();
-    let poly_shell0 = shell0.triangulation(tol);
-    let poly_shell1 = shell1.triangulation(tol);
+    let (poly_shell0, poly_shell1) =
+        super::join(|| shell0.triangulation(tol), || shell1.triangulation(tol));
     let altshell0: AltCurveShell<C, S> =
         shell0.mapped(|x| *x, |c| Alternative::FirstType(c.clone()), Clone::clone);
     let altshell1: AltCurveShell<C, S> =
