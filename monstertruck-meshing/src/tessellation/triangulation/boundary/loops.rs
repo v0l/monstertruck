@@ -17,6 +17,33 @@ pub(in crate::tessellation::triangulation) struct PolyBoundary {
     /// UV-space axis-aligned bounding box for cheap rejection in `include()`.
     pub(in crate::tessellation::triangulation) uv_min: Point2,
     pub(in crate::tessellation::triangulation) uv_max: Point2,
+    pub(in crate::tessellation::triangulation) chunks: std::sync::OnceLock<Vec<Chunk>>,
+}
+
+const CHUNK: usize = 16;
+
+#[derive(Debug, Clone)]
+pub(in crate::tessellation::triangulation) struct Chunk {
+    ring: usize,
+    start: usize,
+    end: usize,
+    min: Point2,
+    max: Point2,
+}
+
+impl Chunk {
+    fn clear_of(&self, c: Point2, r: Vector2) -> bool {
+        let side = |x: f64, y: f64| r.x * (y - c.y) - r.y * (x - c.x);
+        let corners = [
+            side(self.min.x, self.min.y),
+            side(self.min.x, self.max.y),
+            side(self.max.x, self.min.y),
+            side(self.max.x, self.max.y),
+        ];
+        let scale = (self.max - self.min).magnitude() + (self.min - c).magnitude() + 1.0;
+        let margin = scale * 1.0e-12;
+        corners.iter().all(|&s| s > margin) || corners.iter().all(|&s| s < -margin)
+    }
 }
 
 impl Default for PolyBoundary {
@@ -25,6 +52,7 @@ impl Default for PolyBoundary {
             loops: Vec::new(),
             uv_min: Point2::new(f64::INFINITY, f64::INFINITY),
             uv_max: Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+            chunks: Default::default(),
         }
     }
 }
@@ -308,7 +336,38 @@ impl PolyBoundary {
             loops: closed,
             uv_min,
             uv_max,
+            chunks: Default::default(),
         }
+    }
+
+    fn chunks(&self) -> &[Chunk] {
+        self.chunks.get_or_init(|| {
+            self.loops
+                .iter()
+                .enumerate()
+                .flat_map(|(ring, points)| {
+                    (0..points.len()).step_by(CHUNK).map(move |start| {
+                        let end = (start + CHUNK).min(points.len());
+                        let (mut min, mut max) = (
+                            Point2::new(f64::INFINITY, f64::INFINITY),
+                            Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+                        );
+                        for i in start..=end {
+                            let p = points[i % points.len()].uv;
+                            min = Point2::new(min.x.min(p.x), min.y.min(p.y));
+                            max = Point2::new(max.x.max(p.x), max.y.max(p.y));
+                        }
+                        Chunk {
+                            ring,
+                            start,
+                            end,
+                            min,
+                            max,
+                        }
+                    })
+                })
+                .collect()
+        })
     }
 
     /// Whether `c` is included in the domain with boundary = `self`.
@@ -320,9 +379,14 @@ impl PolyBoundary {
         }
         let t = TAU * HashGen::hash1(c);
         let r = Vector2::new(f64::cos(t), f64::sin(t));
-        self.loops
+        let loops = &self.loops;
+        self.chunks()
             .iter()
-            .flat_map(|vec| vec.iter().circular_tuple_windows())
+            .filter(|chunk| !chunk.clear_of(c, r))
+            .flat_map(|chunk| {
+                let ring = &loops[chunk.ring];
+                (chunk.start..chunk.end).map(move |i| (&ring[i], &ring[(i + 1) % ring.len()]))
+            })
             .try_fold(0_i32, move |counter, (p0, p1)| {
                 let a = **p0 - c;
                 let b = **p1 - c;

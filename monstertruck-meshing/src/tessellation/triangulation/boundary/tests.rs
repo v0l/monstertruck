@@ -306,6 +306,7 @@ fn cdt_insertion_splits_duplicate_seam_chords_through_existing_vertices() {
         ],
         uv_min: Point2::new(0.0, f64::from_bits(4585802930648964182)),
         uv_max: Point2::new(TAU * 0.5, f64::from_bits(4591506709037279730)),
+        chunks: Default::default(),
     };
     let mut triangulation = Cdt::new();
     let mut boundary_map = HashMap::<FixedVertexHandle, Point3>::default();
