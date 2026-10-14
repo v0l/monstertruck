@@ -1,7 +1,7 @@
 use std::iter;
 
 use super::*;
-use boundary::{PolyBoundary, UvKey, boundary_segment_parameter, uv_key};
+use boundary::{PolyBoundary, SplitVertices, UvKey, uv_key};
 
 const MAX_SURFACE_SPAN_INTERVALS: usize = 32;
 const SURFACE_SPAN_TOLERANCE_FACTOR: f64 = 8.0;
@@ -69,29 +69,14 @@ pub(super) fn spade_round(x: f64) -> f64 {
 
 fn add_constraint_through_existing_vertices(
     triangulation: &mut Cdt,
-    split_vertices: &[(FixedVertexHandle, Point2)],
+    split_vertices: &SplitVertices,
     front: (FixedVertexHandle, Point2),
     back: (FixedVertexHandle, Point2),
 ) {
     if front.0 == back.0 {
         return;
     }
-    let mut chain = split_vertices
-        .iter()
-        .filter_map(|(handle, point)| {
-            if *handle == front.0 || *handle == back.0 {
-                None
-            } else {
-                boundary_segment_parameter(*point, front.1, back.1)
-                    .map(|parameter| (parameter, *handle))
-            }
-        })
-        .collect::<Vec<_>>();
-    chain.sort_by(|lhs, rhs| lhs.0.total_cmp(&rhs.0));
-    let handles = iter::once(front.0)
-        .chain(chain.into_iter().map(|(_, handle)| handle))
-        .chain(iter::once(back.0))
-        .collect::<Vec<_>>();
+    let handles = split_vertices.chain(front, back);
     handles.windows(2).for_each(|window| {
         if window[0] != window[1] && triangulation.can_add_constraint(window[0], window[1]) {
             triangulation.add_constraint(window[0], window[1]);
@@ -896,13 +881,10 @@ fn insert_surface(
         division_start,
     );
     let insert_start = Instant::now();
-    let split_vertices = triangulation
-        .vertices()
-        .map(|vertex| {
-            let point = *vertex.as_ref();
-            (vertex.fix(), Point2::new(point.x, point.y))
-        })
-        .collect::<Vec<_>>();
+    let split_vertices = SplitVertices::new(triangulation.vertices().map(|vertex| {
+        let point = *vertex.as_ref();
+        (vertex.fix(), Point2::new(point.x, point.y))
+    }));
     let insert_res: Vec<Vec<Option<_>>> = udiv
         .into_iter()
         .map(|u| {
@@ -960,30 +942,27 @@ fn triangulation_into_polymesh<'a>(
     let mut positions = Vec::<Point3>::new();
     let mut uv_coords = Vec::<Vector2>::new();
     let mut normals = Vec::<Vector3>::new();
-    let mut surface_point_cache = HashMap::<UvKey, Point3>::default();
-    let mut normal_cache = HashMap::<UvKey, Vector3>::default();
-    let vmap: HashMap<_, _> = vertices
-        .enumerate()
-        .map(|(i, v)| {
-            let p = *v.as_ref();
-            let uv = Point2::new(p.x, p.y);
-            let key = uv_key(uv);
-            let idx = v.fix();
-            let point = match boundary_map.get(&idx) {
-                Some(point) => *point,
-                None => *surface_point_cache
-                    .entry(key)
-                    .or_insert_with(|| surface.subs(p.x, p.y)),
-            };
-            let normal = *normal_cache
-                .entry(key)
-                .or_insert_with(|| surface.normal(p.x, p.y));
-            positions.push(point);
-            uv_coords.push(Vector2::new(p.x, p.y));
-            normals.push(normal);
-            (idx, i)
-        })
-        .collect();
+    let mut cache = HashMap::<UvKey, (Option<Point3>, Vector3)>::default();
+    let mut vmap = Vec::<usize>::new();
+    vertices.enumerate().for_each(|(i, v)| {
+        let p = *v.as_ref();
+        let uv = Point2::new(p.x, p.y);
+        let idx = v.fix();
+        let cached = cache
+            .entry(uv_key(uv))
+            .or_insert_with(|| (None, surface.normal(p.x, p.y)));
+        let point = match boundary_map.get(&idx) {
+            Some(point) => *point,
+            None => *cached.0.get_or_insert_with(|| surface.subs(p.x, p.y)),
+        };
+        positions.push(point);
+        uv_coords.push(Vector2::new(p.x, p.y));
+        normals.push(cached.1);
+        if vmap.len() <= idx.index() {
+            vmap.resize(idx.index() + 1, usize::MAX);
+        }
+        vmap[idx.index()] = i;
+    });
     let tri_faces: Vec<[StandardVertex; 3]> = triangles
         .map(|tri| tri.vertices())
         .filter(|tri| {
@@ -992,10 +971,10 @@ fn triangulation_into_polymesh<'a>(
             let (a, b) = (tri[1] - tri[0], tri[2] - tri[0]);
             let c = tri[0] + (a + b) / 3.0;
             let area = a.x * b.y - a.y * b.x;
-            polyline.include(c) && !area.so_small2()
+            !area.so_small2() && polyline.include(c)
         })
         .map(|tri| {
-            let idcs = array![i => vmap[&tri[i].fix()]; 3];
+            let idcs = array![i => vmap[tri[i].fix().index()]; 3];
             array![i => [idcs[i], idcs[i], idcs[i]].into(); 3]
         })
         .collect();

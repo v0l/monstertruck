@@ -17,7 +17,37 @@ pub(in crate::tessellation::triangulation) struct PolyBoundary {
     /// UV-space axis-aligned bounding box for cheap rejection in `include()`.
     pub(in crate::tessellation::triangulation) uv_min: Point2,
     pub(in crate::tessellation::triangulation) uv_max: Point2,
-    pub(in crate::tessellation::triangulation) chunks: std::sync::OnceLock<Vec<Chunk>>,
+    pub(in crate::tessellation::triangulation) chunks: std::sync::OnceLock<Chunks>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(in crate::tessellation::triangulation) struct Chunks {
+    chunks: Vec<Chunk>,
+    blocks: Vec<Block>,
+}
+
+#[derive(Debug, Clone)]
+struct Block {
+    min: Point2,
+    max: Point2,
+    widest: f64,
+    farthest: f64,
+    range: std::ops::Range<usize>,
+}
+
+impl Block {
+    fn clear_of(&self, c: Point2, r: Vector2) -> bool {
+        let side = |x: f64, y: f64| r.x * (y - c.y) - r.y * (x - c.x);
+        let corners = [
+            side(self.min.x, self.min.y),
+            side(self.min.x, self.max.y),
+            side(self.max.x, self.min.y),
+            side(self.max.x, self.max.y),
+        ];
+        let reach = (self.min - c).magnitude() + self.farthest;
+        let margin = (self.widest + reach + 1.0) * 1.0e-12 * 2.0;
+        corners.iter().all(|&s| s > margin) || corners.iter().all(|&s| s < -margin)
+    }
 }
 
 const CHUNK: usize = 16;
@@ -112,6 +142,49 @@ pub(in crate::tessellation::triangulation) fn boundary_segment_parameter(
         let projected = front + segment * parameter;
         (parameter > 0.0 && parameter < 1.0 && projected.distance(point) <= 1.0e-9)
             .then_some(parameter)
+    }
+}
+
+pub(in crate::tessellation::triangulation) struct SplitVertices {
+    by_u: Vec<(Point2, usize, FixedVertexHandle)>,
+}
+
+impl SplitVertices {
+    pub(in crate::tessellation::triangulation) fn new(
+        vertices: impl Iterator<Item = (FixedVertexHandle, Point2)>,
+    ) -> Self {
+        let mut by_u: Vec<_> = vertices
+            .enumerate()
+            .filter(|(_, (_, point))| point.x.is_finite() && point.y.is_finite())
+            .map(|(index, (handle, point))| (point, index, handle))
+            .collect();
+        by_u.sort_by(|a, b| a.0.x.total_cmp(&b.0.x).then(a.1.cmp(&b.1)));
+        Self { by_u }
+    }
+
+    pub(in crate::tessellation::triangulation) fn chain(
+        &self,
+        front: (FixedVertexHandle, Point2),
+        back: (FixedVertexHandle, Point2),
+    ) -> Vec<FixedVertexHandle> {
+        let reach = 2.0e-9;
+        let low = front.1.x.min(back.1.x) - reach;
+        let high = front.1.x.max(back.1.x) + reach;
+        let start = self.by_u.partition_point(|entry| entry.0.x < low);
+        let mut between: Vec<(f64, usize, FixedVertexHandle)> = self.by_u[start..]
+            .iter()
+            .take_while(|entry| entry.0.x <= high)
+            .filter(|entry| entry.2 != front.0 && entry.2 != back.0)
+            .filter_map(|&(point, index, handle)| {
+                boundary_segment_parameter(point, front.1, back.1)
+                    .map(|parameter| (parameter, index, handle))
+            })
+            .collect();
+        between.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        iter::once(front.0)
+            .chain(between.into_iter().map(|(_, _, handle)| handle))
+            .chain(iter::once(back.0))
+            .collect()
     }
 }
 
@@ -340,9 +413,10 @@ impl PolyBoundary {
         }
     }
 
-    fn chunks(&self) -> &[Chunk] {
+    fn chunks(&self) -> &Chunks {
         self.chunks.get_or_init(|| {
-            self.loops
+            let chunks: Vec<Chunk> = self
+                .loops
                 .iter()
                 .enumerate()
                 .flat_map(|(ring, points)| {
@@ -366,7 +440,39 @@ impl PolyBoundary {
                         }
                     })
                 })
-                .collect()
+                .collect();
+            let blocks = (0..chunks.len())
+                .step_by(CHUNK)
+                .map(|start| {
+                    let range = start..(start + CHUNK).min(chunks.len());
+                    let members = &chunks[range.clone()];
+                    let min = members
+                        .iter()
+                        .fold(Point2::new(f64::INFINITY, f64::INFINITY), |m, chunk| {
+                            Point2::new(m.x.min(chunk.min.x), m.y.min(chunk.min.y))
+                        });
+                    let max = members.iter().fold(
+                        Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+                        |m, chunk| Point2::new(m.x.max(chunk.max.x), m.y.max(chunk.max.y)),
+                    );
+                    let widest = members
+                        .iter()
+                        .map(|chunk| (chunk.max - chunk.min).magnitude())
+                        .fold(0.0, f64::max);
+                    let farthest = members
+                        .iter()
+                        .map(|chunk| (chunk.min - min).magnitude())
+                        .fold(0.0, f64::max);
+                    Block {
+                        min,
+                        max,
+                        widest,
+                        farthest,
+                        range,
+                    }
+                })
+                .collect();
+            Chunks { chunks, blocks }
         })
     }
 
@@ -380,8 +486,12 @@ impl PolyBoundary {
         let t = TAU * HashGen::hash1(c);
         let r = Vector2::new(f64::cos(t), f64::sin(t));
         let loops = &self.loops;
-        self.chunks()
+        let chunks = self.chunks();
+        chunks
+            .blocks
             .iter()
+            .filter(|block| !block.clear_of(c, r))
+            .flat_map(|block| &chunks.chunks[block.range.clone()])
             .filter(|chunk| !chunk.clear_of(c, r))
             .flat_map(|chunk| {
                 let ring = &loops[chunk.ring];
@@ -561,13 +671,10 @@ impl PolyBoundary {
                 }
             })
             .collect();
-        let split_vertices = triangulation
-            .vertices()
-            .map(|vertex| {
-                let point = vertex.position();
-                (vertex.fix(), Point2::new(point.x, point.y))
-            })
-            .collect::<Vec<_>>();
+        let split_vertices = SplitVertices::new(triangulation.vertices().map(|vertex| {
+            let point = vertex.position();
+            (vertex.fix(), Point2::new(point.x, point.y))
+        }));
         let mut counter = 0;
         let mut added_constraints = 0usize;
         let mut skipped_constraints = 0usize;
@@ -579,22 +686,7 @@ impl PolyBoundary {
                 let back_point = triangulation.vertex(back).position();
                 let front_point = Point2::new(front_point.x, front_point.y);
                 let back_point = Point2::new(back_point.x, back_point.y);
-                let mut chain = split_vertices
-                    .iter()
-                    .filter_map(|(handle, point)| {
-                        if *handle == front || *handle == back {
-                            None
-                        } else {
-                            boundary_segment_parameter(*point, front_point, back_point)
-                                .map(|parameter| (parameter, *handle))
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                chain.sort_by(|lhs, rhs| lhs.0.total_cmp(&rhs.0));
-                let handles = iter::once(front)
-                    .chain(chain.into_iter().map(|(_, handle)| handle))
-                    .chain(iter::once(back))
-                    .collect::<Vec<_>>();
+                let handles = split_vertices.chain((front, front_point), (back, back_point));
                 let mut handled = false;
                 handles.windows(2).for_each(|window| {
                     if window[0] != window[1] {
