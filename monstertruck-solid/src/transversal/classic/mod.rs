@@ -161,70 +161,31 @@ fn process_one_pair_of_shells<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
         isize::from(flat && poly.to_polygon().volume() < 0.0)
     };
     let (shift0, shift1) = (inverted(&poly_shell0), inverted(&poly_shell1));
+    let boxes0 = face_boxes(&poly_shell0);
+    let boxes1 = face_boxes(&poly_shell1);
+    let rays = if flat { 5 } else { 1 };
     let [mut and0, mut or0, unknown0] = cls0.and_or_unknown();
-    unknown0.into_iter().try_for_each(|face| {
-        let pt = probe(&face);
-        let rays = if flat { 5 } else { 1 };
-        let mut inside = 0;
-        for k in 0..rays {
-            let dir = hash::take_one_unit(
-                pt + Vector3::new(k as f64 * 0.37, k as f64 * 0.11, k as f64 * 0.23),
-            );
-            let count = poly_shell1.iter().try_fold(0, |count, face| {
-                let poly = face.surface()?;
-                let crossed = poly.signed_crossing_faces(pt, dir);
-                Some(
-                    count
-                        + if face.orientation() {
-                            crossed
-                        } else {
-                            -crossed
-                        },
-                )
-            })?;
-            if count + shift1 >= 1 {
-                inside += 1;
-            }
-        }
-        if inside * 2 > rays {
-            and0.push(face);
-        } else {
-            or0.push(face);
-        }
-        Some(())
-    })?;
+    let (inside0, outside0) = split_inside(
+        unknown0.into_iter().collect(),
+        &probe,
+        rays,
+        &poly_shell1,
+        &boxes1,
+        shift1,
+    )?;
+    and0.extend(inside0);
+    or0.extend(outside0);
     let [mut and1, mut or1, unknown1] = cls1.and_or_unknown();
-    unknown1.into_iter().try_for_each(|face| {
-        let pt = probe(&face);
-        let rays = if flat { 5 } else { 1 };
-        let mut inside = 0;
-        for k in 0..rays {
-            let dir = hash::take_one_unit(
-                pt + Vector3::new(k as f64 * 0.37, k as f64 * 0.11, k as f64 * 0.23),
-            );
-            let count = poly_shell0.iter().try_fold(0, |count, face| {
-                let poly = face.surface()?;
-                let crossed = poly.signed_crossing_faces(pt, dir);
-                Some(
-                    count
-                        + if face.orientation() {
-                            crossed
-                        } else {
-                            -crossed
-                        },
-                )
-            })?;
-            if count + shift0 >= 1 {
-                inside += 1;
-            }
-        }
-        if inside * 2 > rays {
-            and1.push(face);
-        } else {
-            or1.push(face);
-        }
-        Some(())
-    })?;
+    let (inside1, outside1) = split_inside(
+        unknown1.into_iter().collect(),
+        &probe,
+        rays,
+        &poly_shell0,
+        &boxes0,
+        shift0,
+    )?;
+    and1.extend(inside1);
+    or1.extend(outside1);
     for (face, mark) in taken0 {
         if mark == coplanar::Overlap::Same {
             or0.push(face);
@@ -242,6 +203,108 @@ fn process_one_pair_of_shells<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
         true => Some([coplanar::sew(&and, tol)?, coplanar::sew(&or, tol)?]),
         false => Some([and, or]),
     }
+}
+
+type PolyShell = Shell<Point3, PolylineCurve<Point3>, Option<PolygonMesh>>;
+
+fn face_boxes(poly: &PolyShell) -> Vec<Option<BoundingBox<Point3>>> {
+    poly.face_iter()
+        .map(|face| {
+            let mesh = face.surface()?;
+            let mut bounds: BoundingBox<Point3> = mesh.positions().iter().collect();
+            let pad = bounds.diameter() * 1.0e-9 + 1.0e-12;
+            bounds.push(bounds.max() + Vector3::new(pad, pad, pad));
+            bounds.push(bounds.min() - Vector3::new(pad, pad, pad));
+            Some(bounds)
+        })
+        .collect()
+}
+
+fn ray_meets_box(bounds: &BoundingBox<Point3>, origin: Point3, direction: Vector3) -> bool {
+    let (min, max) = (bounds.min(), bounds.max());
+    let (mut near, mut far) = (0.0_f64, f64::INFINITY);
+    for k in 0..3 {
+        if direction[k] == 0.0 {
+            if origin[k] < min[k] || origin[k] > max[k] {
+                return false;
+            }
+            continue;
+        }
+        let (a, b) = (
+            (min[k] - origin[k]) / direction[k],
+            (max[k] - origin[k]) / direction[k],
+        );
+        near = near.max(a.min(b));
+        far = far.min(a.max(b));
+        if near > far {
+            return false;
+        }
+    }
+    true
+}
+
+fn crossings(
+    poly: &PolyShell,
+    boxes: &[Option<BoundingBox<Point3>>],
+    point: Point3,
+    direction: Vector3,
+) -> Option<isize> {
+    poly.face_iter()
+        .zip(boxes)
+        .try_fold(0, |count, (face, bounds)| {
+            let mesh = face.surface()?;
+            if bounds
+                .as_ref()
+                .is_some_and(|b| !ray_meets_box(b, point, direction))
+            {
+                return Some(count);
+            }
+            let crossed = mesh.signed_crossing_faces(point, direction);
+            Some(
+                count
+                    + if face.orientation() {
+                        crossed
+                    } else {
+                        -crossed
+                    },
+            )
+        })
+}
+
+#[allow(clippy::type_complexity)]
+fn split_inside<F: Send + Sync, P: Fn(&F) -> Point3 + Sync>(
+    unknown: Vec<F>,
+    probe: &P,
+    rays: usize,
+    other: &PolyShell,
+    boxes: &[Option<BoundingBox<Point3>>],
+    shift: isize,
+) -> Option<(Vec<F>, Vec<F>)> {
+    use rayon::prelude::*;
+    let verdicts = unknown
+        .par_iter()
+        .map(|face| {
+            let pt = probe(face);
+            let mut inside = 0;
+            for k in 0..rays {
+                let dir = hash::take_one_unit(
+                    pt + Vector3::new(k as f64 * 0.37, k as f64 * 0.11, k as f64 * 0.23),
+                );
+                if crossings(other, boxes, pt, dir)? + shift >= 1 {
+                    inside += 1;
+                }
+            }
+            Some(inside * 2 > rays)
+        })
+        .collect::<Option<Vec<bool>>>()?;
+    let (mut ins, mut outs) = (Vec::new(), Vec::new());
+    for (face, verdict) in unknown.into_iter().zip(verdicts) {
+        match verdict {
+            true => ins.push(face),
+            false => outs.push(face),
+        }
+    }
+    Some((ins, outs))
 }
 
 fn finalize<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
