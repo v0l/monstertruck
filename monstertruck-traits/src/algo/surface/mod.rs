@@ -619,9 +619,14 @@ fn sub_parameter_division<S>(
     DIVISION_CELLS_TOTAL.fetch_add(level_cells, std::sync::atomic::Ordering::Relaxed);
     let mut divide_flag0 = vec![false; udiv.len() - 1];
     let mut divide_flag1 = vec![false; vdiv.len() - 1];
+    let columns = vdiv.len();
+    let mut corners: Vec<Option<S::Point>> = vec![None; udiv.len() * columns];
+    let mut corner = |i: usize, j: usize| -> S::Point {
+        *corners[i * columns + j].get_or_insert_with(|| surface.evaluate(udiv[i], vdiv[j]))
+    };
 
-    for (u, ub) in udiv.windows(2).zip(&mut divide_flag0) {
-        for (v, vb) in vdiv.windows(2).zip(&mut divide_flag1) {
+    for (i, (u, ub)) in udiv.windows(2).zip(&mut divide_flag0).enumerate() {
+        for (j, (v, vb)) in vdiv.windows(2).zip(&mut divide_flag1).enumerate() {
             if *ub && *vb {
                 continue;
             }
@@ -635,10 +640,10 @@ fn sub_parameter_division<S>(
             let u0 = u[0] * (1.0 - p) + u[1] * p;
             let v0 = v[0] * (1.0 - q) + v[1] * q;
             let p0 = surface.evaluate(u0, v0);
-            let pt00 = surface.evaluate(u[0], v[0]);
-            let pt01 = surface.evaluate(u[0], v[1]);
-            let pt10 = surface.evaluate(u[1], v[0]);
-            let pt11 = surface.evaluate(u[1], v[1]);
+            let pt00 = corner(i, j);
+            let pt01 = corner(i, j + 1);
+            let pt10 = corner(i + 1, j);
+            let pt11 = corner(i + 1, j + 1);
             let pt = S::Point::from_vec(
                 pt00.to_vec() * (1.0 - p) * (1.0 - q)
                     + pt01.to_vec() * (1.0 - p) * q
