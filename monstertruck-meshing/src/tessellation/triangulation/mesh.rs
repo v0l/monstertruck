@@ -178,6 +178,27 @@ pub(super) fn trimming_tessellation<S>(
 where
     S: PreMeshableSurface,
 {
+    nudged_trimming_tessellation(
+        surface,
+        polyboundary,
+        tolerance,
+        primitive_config,
+        face_idx,
+        false,
+    )
+}
+
+pub(super) fn nudged_trimming_tessellation<S>(
+    surface: &S,
+    polyboundary: &PolyBoundary,
+    tolerance: f64,
+    primitive_config: TessellationPrimitiveOptions,
+    face_idx: usize,
+    nudge: bool,
+) -> PolygonMesh
+where
+    S: PreMeshableSurface,
+{
     if primitive_config.mode == TessellationPrimitiveMode::IsoQuads {
         if let Some(mut mesh) =
             iso_quad_trimmed_tessellation(surface, polyboundary, tolerance, face_idx)
@@ -185,12 +206,13 @@ where
             ensure_winding_matches_normals(&mut mesh);
             mesh
         } else {
-            let mut mesh = cdt_trimming_tessellation(surface, polyboundary, tolerance, face_idx);
+            let mut mesh =
+                cdt_trimming_tessellation(surface, polyboundary, tolerance, face_idx, nudge);
             ensure_winding_matches_normals(&mut mesh);
             mesh
         }
     } else {
-        let mut mesh = cdt_trimming_tessellation(surface, polyboundary, tolerance, face_idx);
+        let mut mesh = cdt_trimming_tessellation(surface, polyboundary, tolerance, face_idx, nudge);
         ensure_winding_matches_normals(&mut mesh);
         apply_primitive_mode(&mut mesh, primitive_config);
         mesh
@@ -202,6 +224,7 @@ fn cdt_trimming_tessellation<S>(
     polyboundary: &PolyBoundary,
     tolerance: f64,
     face_idx: usize,
+    nudge: bool,
 ) -> PolygonMesh
 where
     S: PreMeshableSurface,
@@ -230,6 +253,7 @@ where
         polyboundary,
         tolerance,
         face_idx,
+        nudge,
     );
     log_mesh_trace(
         face_idx,
@@ -353,7 +377,7 @@ where
             Faces::from_tri_and_quad_faces(Vec::new(), interior_quads),
         );
         let mut boundary_mesh =
-            cdt_trimming_tessellation(surface, polyboundary, tolerance, face_idx);
+            cdt_trimming_tessellation(surface, polyboundary, tolerance, face_idx, false);
         let boundary_triangles = boundary_mesh
             .tri_faces()
             .iter()
@@ -836,6 +860,7 @@ fn insert_surface(
     polyline: &PolyBoundary,
     tolerance: f64,
     face_idx: usize,
+    nudge: bool,
 ) {
     let range = (
         (polyline.uv_min.x, polyline.uv_max.x),
@@ -885,17 +910,32 @@ fn insert_surface(
         let point = *vertex.as_ref();
         (vertex.fix(), Point2::new(point.x, point.y))
     }));
+    let offset = |division: &[f64], i: usize, seed: usize| -> f64 {
+        if !nudge || i == 0 || i + 1 >= division.len() {
+            return 0.0;
+        }
+        let gap = (division[i] - division[i - 1]).min(division[i + 1] - division[i]);
+        let mut h = (seed as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ (i as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+        h ^= h >> 29;
+        h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        h ^= h >> 32;
+        (h as f64 / u64::MAX as f64 - 0.5) * 2.0e-6 * gap
+    };
     let insert_res: Vec<Vec<Option<_>>> = udiv
-        .into_iter()
-        .map(|u| {
+        .iter()
+        .enumerate()
+        .map(|(i, &u)| {
             vdiv.iter()
-                .map(|v| {
+                .enumerate()
+                .map(|(j, v)| {
                     let uv = Point2::new(u, *v);
+                    let moved = SPoint2::new(
+                        u + offset(&udiv, i, 2 * j + 1),
+                        *v + offset(&vdiv, j, 2 * i + 2),
+                    );
                     match polyline.include(uv) {
-                        true => triangulation
-                            .insert(SPoint2::new(u, *v))
-                            .ok()
-                            .map(|handle| (handle, uv)),
+                        true => triangulation.insert(moved).ok().map(|handle| (handle, uv)),
                         false => None,
                     }
                 })

@@ -702,7 +702,7 @@ fn signed_volume<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
     solid
         .boundaries()
         .iter()
-        .map(|shell| shell.triangulation(tol).to_polygon().volume())
+        .map(|shell| measuring_triangulation(shell, tol).to_polygon().volume())
         .sum()
 }
 

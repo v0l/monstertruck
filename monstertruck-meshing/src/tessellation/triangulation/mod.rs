@@ -22,7 +22,7 @@ use boundary::{PolyBoundary, PolyBoundaryPiece};
 pub(crate) use diagnostics::classify_face_drop;
 use diagnostics::observe_face_drop;
 pub use diagnostics::{FaceDropReason, face_drop_count, reset_face_drop_count};
-use mesh::{trimming_tessellation, untrimmed_tessellation};
+use mesh::{nudged_trimming_tessellation, trimming_tessellation, untrimmed_tessellation};
 
 type SPoint2 = spade::Point2<f64>;
 type Cdt = ConstrainedDelaunayTriangulation<SPoint2>;
@@ -495,6 +495,45 @@ where
     C: PolylineableCurve + 'a,
     S: PreMeshableSurface + 'a,
 {
+    nudged_shell_tessellation(shell, tolerance, sp, primitive_config, false)
+}
+
+#[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
+pub(super) fn nudged_shell_tessellation<'a, C, S>(
+    shell: &Shell<Point3, C, S>,
+    tolerance: f64,
+    sp: impl SP<S>,
+    primitive_config: TessellationPrimitiveOptions,
+    nudge: bool,
+) -> MeshedShell
+where
+    C: PolylineableCurve + 'a,
+    S: PreMeshableSurface + 'a,
+{
+    shell
+        .face_par_iter()
+        .zip(face_wires(shell, tolerance))
+        .enumerate()
+        .map(|(face_idx, (face, wires))| {
+            shell_create_polygon(
+                &face.surface(),
+                wires,
+                face.orientation(),
+                tolerance,
+                nudge,
+                &sp,
+                primitive_config,
+                Some(face_idx),
+            )
+        })
+        .collect()
+}
+
+#[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
+fn face_wires<C: PolylineableCurve, S: PreMeshableSurface>(
+    shell: &Shell<Point3, C, S>,
+    tolerance: f64,
+) -> Vec<Vec<Wire<Point3, PolylineCurve>>> {
     let vmap: HashMap<_, _> = shell
         .vertex_par_iter()
         .map(|v| (v.id(), v.mapped(Point3::clone)))
@@ -524,23 +563,90 @@ where
     };
     let create_boundary =
         |wire: &Wire<Point3, C>| -> Wire<_, _> { wire.edge_iter().map(create_edge).collect() };
-    let create_face = move |(face_idx, face): (usize, &Face<Point3, C, S>)| -> Face<_, _, _> {
-        let wires: Vec<_> = face
-            .absolute_boundaries()
+    shell
+        .face_par_iter()
+        .map(|face| {
+            face.absolute_boundaries()
+                .iter()
+                .map(create_boundary)
+                .collect()
+        })
+        .collect()
+}
+
+#[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
+pub(super) fn graded_pair_tessellation<C, S>(
+    shells: [&Shell<Point3, C, S>; 2],
+    tolerance: f64,
+    coarse: f64,
+    reach: f64,
+    sp: impl SP<S>,
+    primitive_config: TessellationPrimitiveOptions,
+) -> [MeshedShell; 2]
+where
+    C: PolylineableCurve,
+    S: PreMeshableSurface,
+{
+    let prepared = shells.map(|shell| {
+        shell
+            .face_par_iter()
+            .zip(face_wires(shell, tolerance))
+            .enumerate()
+            .map(|(face_idx, (face, wires))| {
+                PreparedFace::new(
+                    face.surface(),
+                    face.orientation(),
+                    wires,
+                    tolerance,
+                    &sp,
+                    face_idx,
+                )
+            })
+            .collect::<Vec<_>>()
+    });
+    let rough = prepared.each_ref().map(|faces| {
+        faces
+            .par_iter()
+            .map(|face| face.mesh(coarse, primitive_config))
+            .collect::<Vec<_>>()
+    });
+    let bounds = |mesh: &PolygonMesh| -> BoundingBox<Point3> { mesh.positions().iter().collect() };
+    let extent = |meshes: &[Option<PolygonMesh>]| -> BoundingBox<Point3> {
+        meshes
             .iter()
-            .map(create_boundary)
-            .collect();
-        shell_create_polygon(
-            &face.surface(),
-            wires,
-            face.orientation(),
-            tolerance,
-            &sp,
-            primitive_config,
-            Some(face_idx),
-        )
+            .flatten()
+            .flat_map(|mesh| mesh.positions().iter().copied())
+            .collect()
     };
-    shell.face_par_iter().enumerate().map(create_face).collect()
+    let extents = [extent(&rough[0]), extent(&rough[1])];
+    let near = |bounds: &BoundingBox<Point3>, other: &BoundingBox<Point3>| {
+        other.is_empty()
+            || (0..3).all(|k| {
+                bounds.min()[k] - reach <= other.max()[k]
+                    && other.min()[k] <= bounds.max()[k] + reach
+            })
+    };
+    let [prepared0, prepared1] = prepared;
+    let [rough0, rough1] = rough;
+    let finish = |faces: Vec<PreparedFace<S>>,
+                  rough: Vec<Option<PolygonMesh>>,
+                  other: &BoundingBox<Point3>| {
+        faces
+            .into_par_iter()
+            .zip(rough)
+            .map(|(face, mesh)| {
+                let mesh = match mesh {
+                    Some(mesh) if !near(&bounds(&mesh), other) => Some(mesh),
+                    _ => face.mesh(tolerance, primitive_config),
+                };
+                face.finish(mesh)
+            })
+            .collect()
+    };
+    [
+        finish(prepared0, rough0, &extents[1]),
+        finish(prepared1, rough1, &extents[0]),
+    ]
 }
 
 /// Tessellates faces.
@@ -550,6 +656,21 @@ pub(super) fn shell_tessellation_single_thread<'a, C, S>(
     tolerance: f64,
     sp: impl SP<S>,
     primitive_config: TessellationPrimitiveOptions,
+) -> MeshedShell
+where
+    C: PolylineableCurve + 'a,
+    S: PreMeshableSurface + 'a,
+{
+    nudged_shell_tessellation_single_thread(shell, tolerance, sp, primitive_config, false)
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+pub(super) fn nudged_shell_tessellation_single_thread<'a, C, S>(
+    shell: &'a Shell<Point3, C, S>,
+    tolerance: f64,
+    sp: impl SP<S>,
+    primitive_config: TessellationPrimitiveOptions,
+    nudge: bool,
 ) -> MeshedShell
 where
     C: PolylineableCurve + 'a,
@@ -595,6 +716,7 @@ where
             wires,
             face.orientation(),
             tolerance,
+            nudge,
             &sp,
             primitive_config,
             Some(face_idx),
@@ -1187,29 +1309,42 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn shell_create_polygon<S: PreMeshableSurface>(
     surface: &S,
     wires: Vec<Wire<Point3, PolylineCurve>>,
     orientation: bool,
     tolerance: f64,
+    nudge: bool,
     sp: impl SP<S>,
     primitive_config: TessellationPrimitiveOptions,
     face_idx: Option<usize>,
 ) -> Face<Point3, PolylineCurve, Option<PolygonMesh>> {
-    // Fast path: untrimmed face with bounded surface domain.
-    let is_untrimmed = wires.iter().all(|w| w.is_empty());
-    let polygon = if is_untrimmed {
-        if let (Some(urange), Some(vrange)) = surface.try_range_tuple() {
-            Some(untrimmed_tessellation(
-                surface,
-                (urange, vrange),
-                tolerance,
-                primitive_config.mode,
-            ))
-        } else {
-            None
+    let domain = FaceDomain::new(surface, &wires, tolerance, sp, face_idx);
+    let polygon = domain.mesh(surface, tolerance, primitive_config, nudge);
+    finish_face(surface, wires, orientation, polygon, face_idx)
+}
+
+enum FaceDomain {
+    Untrimmed(((f64, f64), (f64, f64))),
+    Trimmed(PolyBoundary),
+    Failed,
+}
+
+impl FaceDomain {
+    fn new<S: PreMeshableSurface>(
+        surface: &S,
+        wires: &[Wire<Point3, PolylineCurve>],
+        tolerance: f64,
+        sp: impl SP<S>,
+        face_idx: Option<usize>,
+    ) -> Self {
+        if wires.iter().all(|w| w.is_empty()) {
+            return match surface.try_range_tuple() {
+                (Some(urange), Some(vrange)) => FaceDomain::Untrimmed((urange, vrange)),
+                _ => FaceDomain::Failed,
+            };
         }
-    } else {
         boundary::projection_debug_set_face(face_idx);
         let preboundary = wires
             .iter()
@@ -1218,11 +1353,49 @@ fn shell_create_polygon<S: PreMeshableSurface>(
                 PolyBoundaryPiece::try_new(surface, wire_iter, &sp, tolerance)
             })
             .collect::<Option<Vec<_>>>();
-        preboundary.map(|preboundary| {
-            let boundary = PolyBoundary::new(preboundary, &surface, tolerance);
-            trimming_tessellation(surface, &boundary, tolerance, primitive_config, usize::MAX)
-        })
-    };
+        match preboundary {
+            Some(preboundary) => {
+                FaceDomain::Trimmed(PolyBoundary::new(preboundary, &surface, tolerance))
+            }
+            None => FaceDomain::Failed,
+        }
+    }
+
+    fn mesh<S: PreMeshableSurface>(
+        &self,
+        surface: &S,
+        interior: f64,
+        primitive_config: TessellationPrimitiveOptions,
+        nudge: bool,
+    ) -> Option<PolygonMesh> {
+        match self {
+            FaceDomain::Untrimmed(range) => Some(untrimmed_tessellation(
+                surface,
+                *range,
+                interior,
+                primitive_config.mode,
+            )),
+            FaceDomain::Trimmed(boundary) => Some(nudged_trimming_tessellation(
+                surface,
+                boundary,
+                interior,
+                primitive_config,
+                usize::MAX,
+                nudge,
+            )),
+            FaceDomain::Failed => None,
+        }
+    }
+}
+
+fn finish_face<S: PreMeshableSurface>(
+    surface: &S,
+    wires: Vec<Wire<Point3, PolylineCurve>>,
+    orientation: bool,
+    polygon: Option<PolygonMesh>,
+    face_idx: Option<usize>,
+) -> Face<Point3, PolylineCurve, Option<PolygonMesh>> {
+    let is_untrimmed = wires.iter().all(|w| w.is_empty());
     let loops = wires.len();
     let edges = wires.iter().map(|wire| wire.len()).sum();
     observe_face_drop(
@@ -1238,6 +1411,58 @@ fn shell_create_polygon<S: PreMeshableSurface>(
         new_face.invert();
     }
     new_face
+}
+
+#[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
+struct PreparedFace<S> {
+    surface: S,
+    orientation: bool,
+    wires: Vec<Wire<Point3, PolylineCurve>>,
+    domain: FaceDomain,
+    face_idx: usize,
+}
+
+#[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
+impl<S: PreMeshableSurface> PreparedFace<S> {
+    fn new(
+        surface: S,
+        orientation: bool,
+        wires: Vec<Wire<Point3, PolylineCurve>>,
+        tolerance: f64,
+        sp: impl SP<S>,
+        face_idx: usize,
+    ) -> Self {
+        let domain = FaceDomain::new(&surface, &wires, tolerance, sp, Some(face_idx));
+        Self {
+            surface,
+            orientation,
+            wires,
+            domain,
+            face_idx,
+        }
+    }
+
+    fn mesh(
+        &self,
+        interior: f64,
+        primitive_config: TessellationPrimitiveOptions,
+    ) -> Option<PolygonMesh> {
+        self.domain
+            .mesh(&self.surface, interior, primitive_config, false)
+    }
+
+    fn finish(
+        self,
+        polygon: Option<PolygonMesh>,
+    ) -> Face<Point3, PolylineCurve, Option<PolygonMesh>> {
+        finish_face(
+            &self.surface,
+            self.wires,
+            self.orientation,
+            polygon,
+            Some(self.face_idx),
+        )
+    }
 }
 
 #[test]

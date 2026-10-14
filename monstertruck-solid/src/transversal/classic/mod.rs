@@ -94,8 +94,7 @@ fn process_one_pair_of_shells<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
         None => (shell0, shell1),
     };
     let flat = imprinted.is_some();
-    let (poly_shell0, poly_shell1) =
-        super::join(|| shell0.triangulation(tol), || shell1.triangulation(tol));
+    let (poly_shell0, poly_shell1) = graded_pair(shell0, shell1, tol);
     let altshell0: AltCurveShell<C, S> =
         shell0.mapped(|x| *x, |c| Alternative::FirstType(c.clone()), Clone::clone);
     let altshell1: AltCurveShell<C, S> =
@@ -204,6 +203,19 @@ fn process_one_pair_of_shells<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
 }
 
 type PolyShell = Shell<Point3, PolylineCurve<Point3>, Option<PolygonMesh>>;
+
+const COARSE: f64 = 100.0;
+
+fn graded_pair<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
+    shell0: &Shell<Point3, C, S>,
+    shell1: &Shell<Point3, C, S>,
+    tol: f64,
+) -> (PolyShell, PolyShell) {
+    let coarse = tol * COARSE;
+    let [poly0, poly1] =
+        graded_pair_triangulation(shell0, shell1, tol, coarse, 6.0 * coarse + 2.0 * tol);
+    (poly0, poly1)
+}
 
 struct Target {
     mesh: PolygonMesh,

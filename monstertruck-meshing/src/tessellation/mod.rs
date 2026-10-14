@@ -488,6 +488,70 @@ pub fn triangulation_with<C: PolylineableCurve, S: MeshableSurface>(
     res
 }
 
+/// Tessellates two shells with their edges at `tolerance`, giving each face
+/// a coarse interior at `coarse` unless it comes within `reach` of the other
+/// shell, where it gets `tolerance` too. Each shell stays closed because its
+/// faces share their edges, and near the other shell it is as fine as
+/// [`MeshableShape::triangulation`] would make it.
+pub fn graded_pair_triangulation<C: PolylineableCurve, S: MeshableSurface>(
+    shell0: &Shell<Point3, C, S>,
+    shell1: &Shell<Point3, C, S>,
+    tolerance: f64,
+    coarse: f64,
+    reach: f64,
+) -> [Shell<Point3, PolylineCurve, Option<PolygonMesh>>; 2] {
+    nonpositive_tolerance!(tolerance);
+    let options = TessellationOptions::default();
+    let sp = triangulation::search_parameter_sp::<S>(options.search_trials);
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
+    let res = triangulation::graded_pair_tessellation(
+        [shell0, shell1],
+        tolerance,
+        coarse,
+        reach,
+        sp,
+        options.primitive,
+    );
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    let res = {
+        let _ = (coarse, reach);
+        [shell0, shell1].map(|shell| {
+            triangulation::shell_tessellation_single_thread(
+                shell,
+                tolerance,
+                &sp,
+                options.primitive,
+            )
+        })
+    };
+    res
+}
+
+/// Tessellates a [`Shell`] like [`MeshableShape::triangulation`] for measuring
+/// it, not for showing it: inner grid points move by a millionth of a cell,
+/// which spares the Delaunay tests on exact grids their exact arithmetic but
+/// changes which way the cells are split.
+pub fn measuring_triangulation<C: PolylineableCurve, S: MeshableSurface>(
+    shell: &Shell<Point3, C, S>,
+    tolerance: f64,
+) -> Shell<Point3, PolylineCurve, Option<PolygonMesh>> {
+    nonpositive_tolerance!(tolerance);
+    let options = TessellationOptions::default();
+    let sp = triangulation::search_parameter_sp::<S>(options.search_trials);
+    #[cfg(any(not(target_arch = "wasm32"), target_feature = "atomics"))]
+    let res =
+        triangulation::nudged_shell_tessellation(shell, tolerance, sp, options.primitive, true);
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+    let res = triangulation::nudged_shell_tessellation_single_thread(
+        shell,
+        tolerance,
+        sp,
+        options.primitive,
+        true,
+    );
+    res
+}
+
 /// Tessellates a [`Shell`] with robust parameter search and a [`TessellationOptions`].
 pub fn robust_triangulation_with<C: PolylineableCurve, S: RobustMeshableSurface>(
     shell: &Shell<Point3, C, S>,
