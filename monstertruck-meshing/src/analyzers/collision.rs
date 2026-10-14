@@ -49,9 +49,11 @@ struct Bvh {
 const LEAF: usize = 4;
 
 impl Bvh {
-    fn new(tris: &[[Point3; 3]]) -> Bvh {
+    fn new(tris: &[[Point3; 3]], within: &BoundingBox<Point3>) -> Bvh {
         let boxes: Vec<BoundingBox<Point3>> = tris.iter().map(|tri| tri.iter().collect()).collect();
-        let order: Vec<usize> = (0..tris.len()).filter(|&i| !degenerate(tris[i])).collect();
+        let order: Vec<usize> = (0..tris.len())
+            .filter(|&i| !degenerate(tris[i]) && !apart(&boxes[i], within))
+            .collect();
         let mut bvh = Bvh {
             boxes,
             order,
@@ -127,7 +129,8 @@ fn candidate_pairs<'a>(
     tris0: &'a [[Point3; 3]],
     tris1: &'a [[Point3; 3]],
 ) -> impl Iterator<Item = (usize, usize)> + 'a {
-    let bvh = Bvh::new(tris1);
+    let within: BoundingBox<Point3> = tris0.iter().flatten().collect();
+    let bvh = Bvh::new(tris1, &within);
     let mut found = Vec::new();
     (0..tris0.len())
         .filter(move |&i| !degenerate(tris0[i]))
