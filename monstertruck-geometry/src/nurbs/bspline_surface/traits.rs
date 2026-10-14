@@ -19,6 +19,49 @@ where P: EuclideanSpace<Scalar = f64, Diff = <P as ControlPoint<f64>>::Diff>
 
 impl ParametricSurface3D for BsplineSurface<Point3> {}
 
+impl<P> BsplineSurface<P>
+where P: ControlPoint<f64> + MetricSpace<Metric = f64>
+{
+    fn presearch_separable(
+        &self,
+        point: P,
+        (urange, vrange): SurfaceParameterRange,
+        division: usize,
+    ) -> (f64, f64) {
+        let (degree0, degree1) = self.degrees();
+        let (knot_u, knot_v) = &self.knot_vecs;
+        if knot_u[0] == knot_u[knot_u.len() - 1] || knot_v[0] == knot_v[knot_v.len() - 1] {
+            return algo::surface::presearch(self, point, (urange, vrange), division);
+        }
+        algo::surface::charge_presearch_nodes(algo::surface::presearch_nodes(division));
+        let ((u0, u1), (v0, v1)) = (urange, vrange);
+        let vbasis: Vec<BasisWindow> = (0..=division)
+            .map(|j| {
+                let q = j as f64 / division as f64;
+                let v = v0 * (1.0 - q) + v1 * q;
+                knot_v.bspline_basis_functions(degree1, 0, v)
+            })
+            .collect();
+        let mut res = (0.0, 0.0);
+        let mut min = f64::INFINITY;
+        for i in 0..=division {
+            let p = i as f64 / division as f64;
+            let u = u0 * (1.0 - p) + u1 * p;
+            let ubasis = knot_u.bspline_basis_functions(degree0, 0, u);
+            for (j, vb) in vbasis.iter().enumerate() {
+                let q = j as f64 / division as f64;
+                let v = v0 * (1.0 - q) + v1 * q;
+                let dist = P::from_vec(self.combine_basis(&ubasis, vb)).distance2(point);
+                if dist < min {
+                    min = dist;
+                    res = (u, v);
+                }
+            }
+        }
+        res
+    }
+}
+
 impl<V> BoundedSurface for BsplineSurface<V> where BsplineSurface<V>: ParametricSurface {}
 
 // -- v2 scalar-generic impls ------------------------------------------------
@@ -140,10 +183,10 @@ where
         let hint = match hint.into() {
             SearchParameterHint2D::Parameter(x, y) => (x, y),
             SearchParameterHint2D::Range(range0, range1) => {
-                algo::surface::presearch(self, point, (range0, range1), PRESEARCH_DIVISION)
+                self.presearch_separable(point, (range0, range1), PRESEARCH_DIVISION)
             }
             SearchParameterHint2D::None => {
-                algo::surface::presearch(self, point, self.range_tuple(), PRESEARCH_DIVISION)
+                self.presearch_separable(point, self.range_tuple(), PRESEARCH_DIVISION)
             }
         };
         algo::surface::search_parameter(self, point, hint, trials)
@@ -167,10 +210,10 @@ where
         let hint = match hint.into() {
             SearchParameterHint2D::Parameter(x, y) => (x, y),
             SearchParameterHint2D::Range(range0, range1) => {
-                algo::surface::presearch(self, point, (range0, range1), PRESEARCH_DIVISION)
+                self.presearch_separable(point, (range0, range1), PRESEARCH_DIVISION)
             }
             SearchParameterHint2D::None => {
-                algo::surface::presearch(self, point, self.range_tuple(), PRESEARCH_DIVISION)
+                self.presearch_separable(point, self.range_tuple(), PRESEARCH_DIVISION)
             }
         };
         algo::surface::search_nearest_parameter(self, point, hint, trials)
