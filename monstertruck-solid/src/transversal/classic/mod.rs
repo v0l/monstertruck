@@ -161,16 +161,15 @@ fn process_one_pair_of_shells<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
         isize::from(flat && poly.to_polygon().volume() < 0.0)
     };
     let (shift0, shift1) = (inverted(&poly_shell0), inverted(&poly_shell1));
-    let boxes0 = face_boxes(&poly_shell0);
-    let boxes1 = face_boxes(&poly_shell1);
+    let targets0 = targets(&poly_shell0);
+    let targets1 = targets(&poly_shell1);
     let rays = if flat { 5 } else { 1 };
     let [mut and0, mut or0, unknown0] = cls0.and_or_unknown();
     let (inside0, outside0) = split_inside(
         unknown0.into_iter().collect(),
         &probe,
         rays,
-        &poly_shell1,
-        &boxes1,
+        targets1.as_deref(),
         shift1,
     )?;
     and0.extend(inside0);
@@ -180,8 +179,7 @@ fn process_one_pair_of_shells<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
         unknown1.into_iter().collect(),
         &probe,
         rays,
-        &poly_shell0,
-        &boxes0,
+        targets0.as_deref(),
         shift0,
     )?;
     and1.extend(inside1);
@@ -207,7 +205,13 @@ fn process_one_pair_of_shells<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
 
 type PolyShell = Shell<Point3, PolylineCurve<Point3>, Option<PolygonMesh>>;
 
-fn face_boxes(poly: &PolyShell) -> Vec<Option<BoundingBox<Point3>>> {
+struct Target {
+    mesh: PolygonMesh,
+    orientation: bool,
+    bounds: BoundingBox<Point3>,
+}
+
+fn targets(poly: &PolyShell) -> Option<Vec<Target>> {
     poly.face_iter()
         .map(|face| {
             let mesh = face.surface()?;
@@ -215,7 +219,11 @@ fn face_boxes(poly: &PolyShell) -> Vec<Option<BoundingBox<Point3>>> {
             let pad = bounds.diameter() * 1.0e-9 + 1.0e-12;
             bounds.push(bounds.max() + Vector3::new(pad, pad, pad));
             bounds.push(bounds.min() - Vector3::new(pad, pad, pad));
-            Some(bounds)
+            Some(Target {
+                mesh,
+                orientation: face.orientation(),
+                bounds,
+            })
         })
         .collect()
 }
@@ -243,32 +251,19 @@ fn ray_meets_box(bounds: &BoundingBox<Point3>, origin: Point3, direction: Vector
     true
 }
 
-fn crossings(
-    poly: &PolyShell,
-    boxes: &[Option<BoundingBox<Point3>>],
-    point: Point3,
-    direction: Vector3,
-) -> Option<isize> {
-    poly.face_iter()
-        .zip(boxes)
-        .try_fold(0, |count, (face, bounds)| {
-            let mesh = face.surface()?;
-            if bounds
-                .as_ref()
-                .is_some_and(|b| !ray_meets_box(b, point, direction))
-            {
-                return Some(count);
+fn crossings(targets: &[Target], point: Point3, direction: Vector3) -> isize {
+    targets
+        .iter()
+        .filter(|target| ray_meets_box(&target.bounds, point, direction))
+        .map(|target| {
+            let crossed = target.mesh.signed_crossing_faces(point, direction);
+            if target.orientation {
+                crossed
+            } else {
+                -crossed
             }
-            let crossed = mesh.signed_crossing_faces(point, direction);
-            Some(
-                count
-                    + if face.orientation() {
-                        crossed
-                    } else {
-                        -crossed
-                    },
-            )
         })
+        .sum()
 }
 
 #[allow(clippy::type_complexity)]
@@ -276,8 +271,7 @@ fn split_inside<F: Send + Sync, P: Fn(&F) -> Point3 + Sync>(
     unknown: Vec<F>,
     probe: &P,
     rays: usize,
-    other: &PolyShell,
-    boxes: &[Option<BoundingBox<Point3>>],
+    other: Option<&[Target]>,
     shift: isize,
 ) -> Option<(Vec<F>, Vec<F>)> {
     use rayon::prelude::*;
@@ -290,7 +284,7 @@ fn split_inside<F: Send + Sync, P: Fn(&F) -> Point3 + Sync>(
                 let dir = hash::take_one_unit(
                     pt + Vector3::new(k as f64 * 0.37, k as f64 * 0.11, k as f64 * 0.23),
                 );
-                if crossings(other, boxes, pt, dir)? + shift >= 1 {
+                if crossings(other?, pt, dir) + shift >= 1 {
                     inside += 1;
                 }
             }
