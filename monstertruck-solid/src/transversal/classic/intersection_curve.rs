@@ -50,19 +50,32 @@ where
             Some((q0.midpoint(q1), p0.into(), p1.into()))
         })
     };
+    let mut hints: Option<(Point2, Point2)> = None;
+    let mut triple = |i: usize| {
+        let near = |q: &(Point3, Point2, Point2)| {
+            let reach = [i.wrapping_sub(1), i + 1]
+                .into_iter()
+                .filter_map(|j| raw.get(j))
+                .map(|p| p.distance(raw[i]))
+                .fold(0.0, f64::max);
+            q.0.distance(raw[i]) <= reach
+        };
+        let found = hints
+            .and_then(|(h0, h1)| ic.search_triple_from(i as f64, h0, h1, 100))
+            .filter(near)
+            .or_else(|| ic.search_triple(i as f64, 100))
+            .or_else(|| recover_triple(raw[i]))?;
+        hints = Some((found.1, found.2));
+        Some(found.0)
+    };
     let mut polyline = PolylineCurve(Vec::new());
     for i in 0..len - 1 {
-        let (q, _, _) = ic
-            .search_triple(i as f64, 100)
-            .or_else(|| recover_triple(raw[i]))?;
-        polyline.push(q);
+        polyline.push(triple(i)?);
     }
     let q = if raw[0].near(&raw[len - 1]) {
         polyline[0]
     } else {
-        ic.search_triple((len - 1) as f64, 100)
-            .or_else(|| recover_triple(raw[len - 1]))?
-            .0
+        triple(len - 1)?
     };
     polyline.push(q);
     Some(IntersectionCurve::new(surface0, surface1, polyline))

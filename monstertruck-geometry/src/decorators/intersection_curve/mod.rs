@@ -201,6 +201,26 @@ where
         )
         .or_else(|| self.search_nearest_point(point, None, None, trials))
     }
+    /// Like [`Self::search_triple`], but starts Newton from known uv coordinates
+    /// on both surfaces, such as those of a neighbouring point on the curve,
+    /// and does not fall back to a global search when that fails.
+    pub fn search_triple_from(
+        &self,
+        t: f64,
+        hint0: Point2,
+        hint1: Point2,
+        trials: usize,
+    ) -> Option<(Point3, Point2, Point2)> {
+        double_projection(
+            self.surface0(),
+            Some(hint0.into()),
+            self.surface1(),
+            Some(hint1.into()),
+            self.leader.evaluate(t),
+            self.leader.derivative(t),
+            trials,
+        )
+    }
     /// Search triple value of the point nearest to `point`.
     /// - the coordinate on 3D space
     /// - the uv coordinate on `self.surface0()`
