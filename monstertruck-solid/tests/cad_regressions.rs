@@ -401,3 +401,36 @@ fn small_hole_survives_a_later_cut() {
     let two = volume(&plate) - volume(&second);
     assert!(two > one * 1.5, "one hole {one}, two holes {two}");
 }
+
+fn prism(points: &[Point3], along: Vector3) -> Solid {
+    let v = builder::vertices(points.iter().copied());
+    let mut wire: Wire = (0..v.len())
+        .map(|i| builder::line(&v[i], &v[(i + 1) % v.len()]))
+        .collect();
+    let face: Face = builder::try_attach_plane(&[wire.clone()]).unwrap();
+    if face.oriented_surface().normal(0.5, 0.5).dot(along) < 0.0 {
+        wire.invert();
+    }
+    builder::extrude(&builder::try_attach_plane(&[wire]).unwrap(), along)
+}
+
+#[test]
+fn huge_tool_leaves_a_thin_sliver() {
+    let sheet = cuboid(
+        Point3::new(330.0, -38.5, 2455.0),
+        Point3::new(4650.0, -38.0, 2655.0),
+    );
+    let corners = [
+        (320.0, 2596.0),
+        (4660.0, 2488.0),
+        (4660.0, 3500.0),
+        (320.0, 3500.0),
+    ];
+    let tool = prism(
+        &corners.map(|(x, z)| Point3::new(x, 0.0, z)),
+        Vector3::new(0.0, -100.0, 0.0),
+    );
+    let solid = monstertruck_solid::difference_normalized(&sheet, &tool).expect("cut");
+    let mean_height = (2596.0 + 2488.0) / 2.0 - 2455.0;
+    assert_volume("sliver", &solid, 0.5 * 4320.0 * mean_height, 0.001);
+}

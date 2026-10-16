@@ -707,13 +707,13 @@ fn signed_volume<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
 }
 
 fn plausible_volume(kind: BooleanKind, a: f64, b: f64, result: f64) -> bool {
-    let slack = VOLUME_SLACK * a.abs().max(b.abs());
     let (low, high) = match kind {
         BooleanKind::And if b < 0.0 => (a + b, a),
         BooleanKind::And => (0.0, a.min(b)),
         BooleanKind::Or => (a.max(b), a + b),
         BooleanKind::Difference => (a - b, a),
     };
+    let slack = VOLUME_SLACK * high.abs();
     result > low - slack && result < high + slack && result > slack
 }
 
